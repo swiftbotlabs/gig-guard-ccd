@@ -1,0 +1,31 @@
+{
+  "name": "gig-guard-ccd",
+  "version": "0.1.0",
+  "description": "Gig Guard made accountable on Concordium: registry-checked x402 payments and a tamper-evident decision log",
+  "type": "module",
+  "bin": {
+    "gig-guard": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "ledger": "node src/cli.mjs ledger",
+    "verify": "node src/cli.mjs verify",
+    "demo:offline": "node demo/offline.mjs",
+    "audit": "node src/cli.mjs audit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@x402/evm": "2.31.0",
+    "@x402/fetch": "2.31.0",
+    "viem": "2.58.0",
+    "@x402/concordium": "2.31.0",
+    "@x402/core": "2.31.0",
+    "@x402/express": "2.31.0",
+    "@concordium/web-sdk": "^12.0.0",
+    "express": "^5.1.0",
+    "@grpc/grpc-js": "^1.12.0"
+  },
+  "license": "MIT"
+}

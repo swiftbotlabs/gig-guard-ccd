@@ -1,0 +1,9 @@
+node_modules/
+*.jsonl
+*.export
+.env
+.env.*
+!.env.example
+*.lock
+ledger.html
+ledger.public.jsonl
