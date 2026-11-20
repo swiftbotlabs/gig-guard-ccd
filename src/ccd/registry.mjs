@@ -72,8 +72,11 @@ const lastPart = (s) => String(s ?? "").split(":").pop();
 // Concordium identity providers. Read from the node: only the provider id and the credential's validity month, no
 // personal data. GG_CCD_IDP_ALLOW (comma-separated provider ids) narrows the accepted providers, e.g. on mainnet.
 const ALLOW_IDP = (process.env.GG_CCD_IDP_ALLOW || "").split(",").map((x) => x.trim()).filter(Boolean).map(Number);
+let IP_CACHE = null;   // the provider list changes rarely: read it at most every 10 minutes
 async function nodeIdentityProviders() {
+  if (IP_CACHE && Date.now() - IP_CACHE.at < 600000) return IP_CACHE.list;
   const out = []; for await (const ip of (await import("./chaintx.mjs")).nodeClient().getIdentityProviders()) out.push({ id: Number(ip.ipIdentity), name: String(ip.ipDescription?.name || "").replace(/[^\w .,()-]/g, "").slice(0, 64) });
+  if (out.length) IP_CACHE = { at: Date.now(), list: out };   // never cache an empty list
   return out;
 }
 export async function checkOwnerIdentity(owner, { getAccountInfo, identityProviders = nodeIdentityProviders, now = new Date(), allow = ALLOW_IDP } = {}) {
@@ -83,7 +86,7 @@ export async function checkOwnerIdentity(owner, { getAccountInfo, identityProvid
     const addr = AccountAddress.fromBase58(owner);
     info = getAccountInfo ? await getAccountInfo(addr) : await (await import("./chaintx.mjs")).nodeClient().getAccountInfo(addr);
     ips = await identityProviders();
-  } catch { res.reason = "the owner's identity could not be read from the chain (fail closed)"; return res; }
+  } catch { res.reason = "the account's identity could not be read from the chain (fail closed)"; res.readError = true; return res; }
   const month = now.getUTCFullYear() * 100 + now.getUTCMonth() + 1;
   const known = new Map((ips || []).map((ip) => [ip.id, ip.name]));
   for (const c of Object.values(info?.accountCredentials || {})) {

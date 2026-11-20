@@ -42,7 +42,7 @@ const check = (badge, o) => checkCounterparty(badge, { ownerIdentity: fakeOwnerI
 
 // Fake signing scheme and facilitator: the payload is a stand-in for the sender-signed V1 transaction.
 let settled = 0;
-const scheme = { scheme: "exact", async createPaymentPayload(v, req) { return { x402Version: v, payload: { signedTransaction: { amount: req.amount, to: req.payTo }, sender: BUYER } }; } };
+const scheme = { scheme: "exact", async createPaymentPayload(v, req) { return { x402Version: v, payload: { signedTransaction: { amount: req.amount, to: req.payTo, header: { sender: BUYER } }, sender: BUYER } }; } };
 const facilitatorClient = {
   async verify(p, r) { return { isValid: p.payload.signedTransaction.to === r.payTo, payer: BUYER }; },
   async settle(p, r) { settled++; return { success: true, transaction: settled.toString(16).padStart(64, "a"), network: r.network, payer: BUYER }; },
@@ -225,4 +225,93 @@ test("owner identity: a live credential from a known identity provider passes; u
     const r = await run(cred, o);
     assert.equal(r.ok, false, why); assert.match(r.reason, /identity/, why);
   }
+});
+
+// Seller-side gate (rival gap 6): Ledger Check serves only buyers with a verified human behind the paying account.
+const { payerOf } = await import("../src/ccd/seller.mjs");
+const { checkOwnerIdentity } = await import("../src/ccd/registry.mjs");
+const { fakeIdentityProviders } = await import("../demo/fakekeys.mjs");
+const buyerVerified = (a) => checkOwnerIdentity(a, { identityProviders: fakeIdentityProviders, getAccountInfo: fakeAccountInfo });
+const buyerUnverified = (a) => checkOwnerIdentity(a, { identityProviders: fakeIdentityProviders,
+  getAccountInfo: async (x) => { const i = await fakeAccountInfo(x); i.accountCredentials[0].value.contents.ipIdentity = 99; return i; } });
+
+test("seller gate: a buyer with a verified human behind its account is served and charged; the seller log names the buyer and provider", async () => {
+  const auditFile = tmp(), sellerAudit = tmp(), before = settled;
+  await withSeller({ badge: GOOD, buyerIdentity: buyerVerified, auditFile: sellerAudit }, async (base) => {
+    const r = await buyCcd(base + "/v1/balance", { body: q, purpose: "claim", auditFile, payingFetch: buyer(auditFile) });
+    assert.equal(r.ok, true, JSON.stringify(r));
+  });
+  assert.equal(settled, before + 1);
+  const last = fs.readFileSync(sellerAudit, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+  assert.equal(last.kind, "decision"); assert.equal(last.buyer, BUYER); assert.match(String(last.buyer_idp), /\w/);
+});
+
+test("seller gate: a buyer with no verified human is refused with 403 and NOT charged (settlement cancelled)", async () => {
+  const auditFile = tmp(), sellerAudit = tmp(), before = settled;
+  await withSeller({ badge: GOOD, buyerIdentity: buyerUnverified, auditFile: sellerAudit }, async (base) => {
+    const r = await buyCcd(base + "/v1/balance", { body: q, purpose: "claim", auditFile, payingFetch: buyer(auditFile) });
+    assert.equal(r.ok, false, JSON.stringify(r));
+  });
+  assert.equal(settled, before, "the refused buyer was charged");
+  const last = fs.readFileSync(sellerAudit, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+  assert.equal(last.kind, "refusal"); assert.equal(last.buyer, BUYER);
+});
+
+test("seller gate: a failing identity read fails closed (403, not charged)", async () => {
+  const before = settled;
+  await withSeller({ badge: GOOD, buyerIdentity: async () => { throw new Error("node down POISONx"); }, auditFile: tmp() }, async (base) => {
+    const res = await fetch(base + "/v1/balance", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(q) });
+    assert.equal(res.status, 402);   // no payment at all: the paywall answers first, the gate never runs
+    const auditFile = tmp();
+    const r = await buyCcd(base + "/v1/balance", { body: q, auditFile, payingFetch: buyer(auditFile) });
+    assert.equal(r.ok, false); assert.doesNotMatch(JSON.stringify(r), /POISON/i);
+  });
+  assert.equal(settled, before);
+});
+
+test("seller gate: only the signing account counts; verdicts are cached and repeat refusals log once", async () => {
+  // The identity check passes for one other account only: our buyer (the signer) must be refused.
+  const OTHER = "3kBx2h5Y2veb4hZgAJWPrr8RyQESKm5TjzF3ti1QQ4VSYLwK1G";
+  const asked = [];
+  const onlyOther = async (a) => { asked.push(a); return a === OTHER ? { ok: true, idpName: "x" } : { ok: false, reason: "no live credential" }; };
+  const sellerAudit = tmp(), before = settled;
+  await withSeller({ badge: GOOD, buyerIdentity: onlyOther, auditFile: sellerAudit }, async (base) => {
+    for (let i = 0; i < 3; i++) { const af = tmp(); const r = await buyCcd(base + "/v1/balance", { body: q, auditFile: af, payingFetch: buyer(af) }); assert.equal(r.ok, false); }
+  });
+  assert.equal(settled, before);
+  assert.deepEqual(asked, [BUYER], "the gate must check the signer, once (cached)");
+  const refusals = fs.readFileSync(sellerAudit, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.kind === "refusal");
+  assert.equal(refusals.length, 1); assert.match(refusals[0].reason, /no live credential/);
+});
+
+test("seller gate: aliases of one account share the verdict; a read error is not cached", async () => {
+  const { AccountAddress } = await import("@concordium/web-sdk");
+  const alias = AccountAddress.getAlias(AccountAddress.fromBase58(BUYER), 7).address;
+  const enc = (sender) => Buffer.from(JSON.stringify({ payload: { signedTransaction: { header: { sender } } } })).toString("base64");
+  assert.notEqual(payerOf({ get: (h) => (h === "payment-signature" ? enc(alias) : undefined) }), BUYER);   // the alias is a different string
+  const aliasScheme = { scheme: "exact", async createPaymentPayload(v, req) { return { x402Version: v, payload: { signedTransaction: { amount: req.amount, to: req.payTo, header: { sender: alias } }, sender: alias } }; } };
+  const asked = [], sa = tmp();
+  await withSeller({ badge: GOOD, buyerIdentity: async (a) => { asked.push(a); return { ok: false, reason: "no live credential" }; }, auditFile: sa }, async (base) => {
+    let af = tmp(); await buyCcd(base + "/v1/balance", { body: q, auditFile: af, payingFetch: buyer(af) });
+    af = tmp(); await buyCcd(base + "/v1/balance", { body: q, auditFile: af, payingFetch: makePayingFetch({ account: { address: BUYER, signer: null }, scheme: aliasScheme, check, auditFile: af }) });
+  });
+  assert.equal(asked.length, 1, "an alias must hit the same cached verdict");
+  assert.equal(fs.readFileSync(sa, "utf8").trim().split("\n").filter((l) => JSON.parse(l).kind === "refusal").length, 1);
+  // Real checker, node read fails once then works: the first buyer is refused (not cached), the second served.
+  let calls = 0;
+  const flaky = (a) => checkOwnerIdentity(a, { identityProviders: fakeIdentityProviders, getAccountInfo: async (x) => { if (calls++ === 0) throw new Error("node blip"); return fakeAccountInfo(x); } });
+  const before = settled;
+  await withSeller({ badge: GOOD, buyerIdentity: flaky, auditFile: tmp() }, async (base) => {
+    let af = tmp(); assert.equal((await buyCcd(base + "/v1/balance", { body: q, auditFile: af, payingFetch: buyer(af) })).ok, false);
+    af = tmp(); assert.equal((await buyCcd(base + "/v1/balance", { body: q, auditFile: af, payingFetch: buyer(af) })).ok, true);
+  });
+  assert.equal(settled, before + 1); assert.equal(calls, 2);
+});
+
+test("seller gate: payerOf reads only the signed transaction's sender; malformed or hostile headers give no payer", () => {
+  const hdr = (v) => ({ get: (n) => (n === "payment-signature" ? v : undefined) });
+  const enc = (o) => Buffer.from(JSON.stringify(o)).toString("base64");
+  assert.equal(payerOf(hdr(enc({ payload: { signedTransaction: { header: { sender: BUYER } } } }))), BUYER);
+  for (const bad of [undefined, "", "!!notbase64", enc({ payload: { sender: BUYER } }), enc({ payload: { signedTransaction: { header: { sender: "0xdead" } } } }),
+    enc({ payload: { signedTransaction: { header: { sender: { toString: () => BUYER } } } } }), "A".repeat(20000), enc("just a string")]) assert.equal(payerOf(hdr(bad)), null, String(bad).slice(0, 40));
 });

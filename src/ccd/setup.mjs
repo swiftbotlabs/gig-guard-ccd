@@ -7,6 +7,7 @@
 //   node src/ccd/setup.mjs show <token address>               badge check (same lookup buyers use)
 //   node src/ccd/setup.mjs revoke <token id> [reason]          mark an agent Revoked (used for the refusal demo)
 //   node src/ccd/setup.mjs check-anchor <token id> [audit.jsonl]  read the anchored head back and check the log
+//   (both use registry metadata key gigguard.audit.head, or GG_CCD_ANCHOR_KEY=gigguard.audit.<name>)
 //
 // Every chain write is also appended to GG_LIVE_LOG (default docs/LIVE.md) with its explorer link.
 //
@@ -28,6 +29,10 @@ function live(what, r, extra = "") {
   fs.appendFileSync(f, `| ${new Date().toISOString().slice(0, 19).replace("T", " ")} | ${what} | ${r.ok ? "ok" : "FAILED"}${extra ? ", " + extra : ""} | ${r.explorer ? `[${r.tx.slice(0, 10)}…](${r.explorer})` : "n/a"} |\n`);
 }
 
+// Registry metadata key for the audit head. GG_CCD_ANCHOR_KEY lets a separate, publishable log (e.g. a public demo run) be
+// anchored next to the operator's private one (default key) without replacing it.
+const ANCHOR_KEY = process.env.GG_CCD_ANCHOR_KEY || "gigguard.audit.head";
+if (!/^gigguard\.audit\.[a-z0-9.]{1,40}$/.test(ANCHOR_KEY)) { console.error("GG_CCD_ANCHOR_KEY must look like gigguard.audit.<name>"); process.exit(2); }
 if (cmd === "card") {
   const [name, url, out = "agent-card.json"] = a;
   const me = acct();
@@ -64,7 +69,7 @@ if (cmd === "card") {
   if (!v.ok) { console.error("audit chain broken, not anchoring:", v.reason); process.exit(10); }
   const value = `${v.entries}:${v.head}`;
   const me = acct();
-  const built = await build("build_set_metadata", { token_id: Number(tokenId), key: "gigguard.audit.head", value_hex: Buffer.from(value).toString("hex"), sender: me.address });
+  const built = await build("build_set_metadata", { token_id: Number(tokenId), key: ANCHOR_KEY, value_hex: Buffer.from(value).toString("hex"), sender: me.address });
   const r = await submitBuilt(built, me);
   live(`anchor audit head, token ${tokenId}`, r, value.slice(0, 24) + "…");
   console.log(JSON.stringify({ ok: r.ok, anchored: value, tx: r.tx, explorer: r.explorer }));
@@ -80,7 +85,7 @@ if (cmd === "card") {
 } else if (cmd === "check-anchor") {
   // Free and read-only: works from any machine that can reach the registry MCP (no node access needed).
   const [tokenId, file = AUDIT_FILE] = a;
-  const m = await mcpCall("get_metadata", { token_id: Number(tokenId), key: "gigguard.audit.head", network: NETWORK });
+  const m = await mcpCall("get_metadata", { token_id: Number(tokenId), key: ANCHOR_KEY, network: NETWORK });
   // The tool returns the value as hex and, when it is UTF-8, as text; field names may vary, so search both forms.
   const hexes = JSON.stringify(m ?? null).match(/[0-9a-f]{132,}/gi) || [];
   const anchored = [JSON.stringify(m ?? null), ...hexes.map((h) => Buffer.from(h, "hex").toString())].map((s) => /\d+:[0-9a-f]{64}/.exec(s)?.[0]).find(Boolean) || null;

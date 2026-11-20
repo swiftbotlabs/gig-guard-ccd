@@ -15,7 +15,7 @@ Testnet only. Claim letters are drafts that wait for the user's yes. Paid checks
 ```bash
 npm install
 npm run demo:offline     # the whole flow with a fake registry, fake signature and fake settlement
-npm test                 # 96 tests (+1 that needs a maintainer word list, skipped without it)
+npm test                 # 102 tests (+1 that needs a maintainer word list, skipped without it)
 ```
 
 The offline walkthrough uses the real HTTP 402 flow (`@x402/express` seller, `@x402/fetch` buyer), the real payment policy and the real audit log. Only the registry answers, the signature and the settlement are faked. It shows:
@@ -31,7 +31,7 @@ The offline walkthrough uses the real HTTP 402 flow (`@x402/express` seller, `@x
 |---|---|---|
 | Counterparty check | `src/ccd/registry.mjs` | `check_badge` and `get_agent_wallet` through Concordium's hosted Agent Registry MCP. Registered, Active, card hash, payTo binding, the endpoint's key proof (`/.well-known/agent-proof`, verified against the account's on-chain keys), and the owner's identity credential (`checkOwnerIdentity`: issued by a known Concordium identity provider, not expired). Fails closed. |
 | Payment rail | `src/ccd/rail.mjs` | x402 client on `@x402/concordium`. Per-call and per-day caps checked before signing. The policy runs in `onBeforePaymentCreation` and aborts a payment it doesn't allow. |
-| A seller to hire | `src/ccd/seller.mjs` | "Ledger Check", a small paid agent selling an on-chain balance reading. It advertises its badge in every offer (`extra.agentBadge`) and runs its own facilitator with a sponsor account. |
+| A seller to hire | `src/ccd/seller.mjs` | "Ledger Check", a small paid agent selling an on-chain balance reading. It advertises its badge in every offer (`extra.agentBadge`) and runs its own facilitator with a sponsor account. With `GG_CCD_SELLER_BUYER_ID=1` it is accountable the other way too: it serves only buyers whose paying account holds a live identity credential from an accepted Concordium identity provider, and a refused buyer is never charged (the check runs after the payment is verified and before it settles). Every Concordium account comes from an identity provider, so on mainnet also set `GG_CCD_IDP_ALLOW`; without it the gate refuses only expired or unknown-provider credentials. Verdicts are cached per account for 5 minutes, so a credential that lapses or is removed is noticed within 5 minutes. |
 | Decision log | `src/ccd/audit.mjs` | Hash-chained JSONL; `gig-guard audit` recomputes the chain (exit 10 if edited). **Private**: it holds client names and full reasons, so it stays with the operator (default `~/.gig-guard/`); only its anchored head is public. Show it to an auditor, who can check it against the anchor. |
 | On-chain setup | `src/ccd/setup.mjs`, `src/ccd/chaintx.mjs` | `card`, `register`, `badge`, `anchor`, `revoke` and `show`. The registry MCP builds the contract call; we sign it with our own key. Every write is appended to `docs/LIVE.md` with its CCDExplorer link. |
 | Anchor check | `setup.mjs check-anchor` | Reads the anchored head back from the registry (free, no node access) and checks the log against it. Appending is fine; rewriting anything anchored fails. |

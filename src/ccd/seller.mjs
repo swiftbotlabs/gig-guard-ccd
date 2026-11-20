@@ -7,6 +7,8 @@
 //   GG_CCD_KEYFILE=<seller wallet export>  GG_CCD_SELLER_BADGE=<CIS-2 token address>  node src/ccd/seller.mjs
 //   GG_CCD_SELLER_ORIGIN=<the public origin buyers call, e.g. https://ledger-check.example>  (needed for the key proof)
 //   optional: GG_CCD_SPONSOR_KEYFILE (defaults to the seller account), GG_CCD_PRICE (microCCD, default 100000 = 0.1 CCD), PORT
+//   GG_CCD_SELLER_BUYER_ID=1: serve only buyers whose paying account holds a live identity credential from an accepted Concordium
+//   identity provider (the same check buyers run on sellers; GG_CCD_IDP_ALLOW narrows the providers). A refused buyer is not charged.
 import express from "express";
 import fs from "node:fs";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
@@ -15,11 +17,23 @@ import { ExactConcordiumScheme as ServerScheme } from "@x402/concordium/exact/se
 import { ExactConcordiumScheme as FacilitatorScheme } from "@x402/concordium/exact/facilitator";
 import { toConcordiumFacilitatorSigner, getConcordiumGrpcUrl, parseGrpcUrl } from "@x402/concordium";
 import { loadAccount, CAIP2 } from "./rail.mjs";
-import { proofMessage } from "./registry.mjs";
+import { proofMessage, checkOwnerIdentity } from "./registry.mjs";
 import { AccountAddress, signMessage } from "@concordium/web-sdk";
 import { chainBalance } from "../chain.mjs";
 import { TOKENS, normChain } from "../tokens.mjs";
 import { record, SELLER_AUDIT_FILE } from "./audit.mjs";
+
+// The paying account: the sender in the header of the signed V1 transaction the buyer sent (the facilitator has already
+// verified that signature by the time the route runs). Anything else, or anything malformed, is no payer at all.
+export function payerOf(req) {
+  try {
+    const h = req.get("payment-signature") || req.get("x-payment");
+    if (!h || h.length > 16384 || !/^[A-Za-z0-9+/=_-]+$/.test(h)) return null;
+    const p = JSON.parse(Buffer.from(h, "base64").toString("utf8"));
+    const sender = p?.payload?.signedTransaction?.header?.sender;
+    return typeof sender === "string" ? AccountAddress.fromBase58(sender).address : null;
+  } catch { return null; }
+}
 
 // Wraps an in-process x402Facilitator as the FacilitatorClient the resource server expects.
 export function localFacilitator(fac) {
@@ -30,12 +44,16 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
   badge = process.env.GG_CCD_SELLER_BADGE, price = process.env.GG_CCD_PRICE || "100000", facilitatorClient, read = chainBalance, auditFile = process.env.GG_SELLER_AUDIT || SELLER_AUDIT_FILE,
   card = process.env.GG_CCD_SELLER_CARD ? fs.readFileSync(process.env.GG_CCD_SELLER_CARD) : null,
   origin: originIn = process.env.GG_CCD_SELLER_ORIGIN || null,   // the public origin buyers call; key proofs name it and nothing else
-  rateLimit = { max: Number(process.env.GG_SELLER_RATE_MAX || 60), windowMs: Number(process.env.GG_SELLER_RATE_WINDOW_MS || 60000) } } = {}) {
+  rateLimit = { max: Number(process.env.GG_SELLER_RATE_MAX || 60), windowMs: Number(process.env.GG_SELLER_RATE_WINDOW_MS || 60000) },
+  // Seller-side gate: (account) => {ok, idpName, reason}. On for the CLI with GG_CCD_SELLER_BUYER_ID=1; tests pass their own.
+  buyerIdentity = process.env.GG_CCD_SELLER_BUYER_ID === "1" ? (a) => checkOwnerIdentity(a) : null } = {}) {
   if (!facilitatorClient) {
     const [host, port] = parseGrpcUrl(process.env.GG_CCD_GRPC || getConcordiumGrpcUrl(CAIP2));
     const signer = toConcordiumFacilitatorSigner(sponsor.address, sponsor.signKey, { host, port, useTls: true });
     facilitatorClient = localFacilitator(new x402Facilitator().register(CAIP2, new FacilitatorScheme({ signer })));
   }
+  // Buyer verdicts are cached per account for 5 minutes (bounded), so replays and repeat buyers cost no node reads.
+  const ID_TTL_MS = 300000, ID_CACHE_MAX = 1000, idCache = new Map(), refusedAt = new Map();
   const server = new x402ResourceServer(facilitatorClient).register(CAIP2, new ServerScheme());
   const app = express();
   app.set("case sensitive routing", true);
@@ -95,6 +113,33 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
     },
   }, server));
   app.post("/v1/balance", async (req, res) => {
+    // Runs after the facilitator verified the signed payment and before it is settled: an error status here cancels the
+    // settlement, so a buyer we refuse is never charged. The payer is the sender of the verified, signed transaction.
+    if (buyerIdentity) {
+      const payer = payerOf(req);
+      let id = { ok: false, reason: "no payer account in the payment" };
+      // Cache key: the account without its alias bytes (an account has 2^24 alias addresses, all signing with the same keys).
+      const acct = payer ? Buffer.from(AccountAddress.fromBase58(payer).decodedAddress.subarray(0, 29)).toString("hex") : null;
+      const hit = acct && idCache.get(acct);
+      if (hit && Date.now() - hit.at < ID_TTL_MS) id = hit.id;
+      else if (payer) {
+        try {
+          id = await buyerIdentity(payer);
+          if (!id?.readError) { idCache.delete(acct); idCache.set(acct, { at: Date.now(), id }); if (idCache.size > ID_CACHE_MAX) idCache.delete(idCache.keys().next().value); }
+        } catch { id = { ok: false, reason: "the buyer's identity could not be read (fail closed)" }; }   // read errors are not cached
+      }
+      if (!id?.ok) {
+        // One refusal line per account per 2 minutes (a signed payment can be replayed until it expires): the log stays bounded.
+        const key = acct || "-", last = refusedAt.get(key);
+        if (!last || Date.now() - last > 120000) {
+          refusedAt.delete(key); refusedAt.set(key, Date.now()); if (refusedAt.size > ID_CACHE_MAX) refusedAt.delete(refusedAt.keys().next().value);
+          const why = String(id?.reason || "").replace(/[^\w .,()'-]/g, "").slice(0, 160);
+          record("refusal", { role: "seller", service: "balance", buyer: payer, reason: `buyer has no verified human behind it: ${why}` }, { file: auditFile, agent: badge, owner: seller.address });
+        }
+        return res.status(403).json({ error: "buyer not accepted: the paying account needs a live identity credential from an accepted Concordium identity provider; nothing was charged" });
+      }
+      req.buyerIdp = String(id.idpName || "").replace(/[^\w .,()-]/g, "").slice(0, 64);
+    }
     const { address, token: t } = req.body || {};
     if (!/^0x[0-9a-fA-F]{40}$/.test(address || "")) return res.status(400).json({ error: "address must be a 0x address" });
     const chain = normChain(req.body?.chain);
@@ -103,7 +148,7 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
     if (!/^0x[0-9a-fA-F]{40}$/.test(token) && !Object.hasOwn(TOKENS[chain], token)) return res.status(400).json({ error: `token must be a 0x contract or one of ${Object.keys(TOKENS[chain]).join(", ")}` });
     try {
       const r = await read(address, chain, token);
-      record("decision", { role: "seller", service: "balance", chain, token, ok: !!r }, { file: auditFile, agent: badge, owner: seller.address });
+      record("decision", { role: "seller", service: "balance", chain, token, ok: !!r, ...(buyerIdentity ? { buyer: payerOf(req), buyer_idp: req.buyerIdp } : {}) }, { file: auditFile, agent: badge, owner: seller.address });
       res.json({ address, chain, token, balance: r?.balance ?? null, as_of: new Date().toISOString(), source: "public RPC balanceOf", seller_badge: badge });
     } catch (e) {
       record("decision", { role: "seller", service: "balance", chain, token, ok: false, error: String(e.message || e).slice(0, 200) }, { file: auditFile, agent: badge, owner: seller.address });

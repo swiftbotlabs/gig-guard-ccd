@@ -5,9 +5,13 @@ import { ConcordiumGRPCNodeClient } from "@concordium/web-sdk/nodejs";
 import { AccountAddress, AccountTransactionType, CcdAmount, ContractAddress, Energy, Parameter, ReceiveName, TransactionExpiry, TransactionHash, signTransaction } from "@concordium/web-sdk";
 import { mcpCall, NETWORK } from "./registry.mjs";
 
+// One shared client per node: a new client per read leaves its connection open (security review 9, F1).
+const CLIENTS = new Map();
 export function nodeClient(url = process.env.GG_CCD_GRPC || (NETWORK === "mainnet" ? "grpc.mainnet.concordium.software:20000" : "grpc.testnet.concordium.com:20000")) {
   const [host, port] = url.replace(/^https?:\/\//, "").split(":");
-  return new ConcordiumGRPCNodeClient(host, Number(port || 20000), credentials.createSsl(), { timeout: 30000 });
+  const key = `${host}:${Number(port || 20000)}`;
+  if (!CLIENTS.has(key)) CLIENTS.set(key, new ConcordiumGRPCNodeClient(host, Number(port || 20000), credentials.createSsl(), { timeout: 30000 }));
+  return CLIENTS.get(key);
 }
 
 // built = output of a build_* registry tool. Returns {tx, explorer, outcome}.
