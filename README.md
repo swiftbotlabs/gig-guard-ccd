@@ -4,8 +4,8 @@
 
 On Concordium testnet it gets three things it didn't have:
 
-1. **It proves who it is.** Gig Guard has its own Agent Registry entry (CIS-8004) and an Agent Card whose SHA-256 is committed on chain, owned by an account that can be ID-verified.
-2. **It pays only accountable agents.** Payments go over x402 (`exact` scheme, sponsored V1 transactions, so the buyer needs no CCD for fees). Before anything is signed, the seller must be in the registry, **Active**, with an Agent Card that matches its on-chain hash, the endpoint being paid must serve that same card at `/.well-known/agent-card.json` **and prove it holds the registered wallet's key**: it signs a fresh challenge naming the exact origin being paid, checked against the account's keys on chain. A copied badge or a copied card is not enough, and a proof relayed from the real seller names the real seller's origin, so it fails too. The x402 `payTo` must be that agent's registered wallet. Only the configured network and assets (`GG_CCD_ASSETS`, default CCD) are paid, and every authorised payment counts against the daily cap at once, whether or not the seller reports settlement. Anything else is refused and logged. If the registry can't be reached, nothing is paid.
+1. **It proves who it is.** Gig Guard has its own Agent Registry entry (CIS-8004) and an Agent Card whose SHA-256 is committed on chain, owned by an account whose identity credential was issued by a Concordium identity provider (read from the chain: provider "Concordium testnet IP", valid to 2027-11).
+2. **It pays only accountable agents.** Payments go over x402 (`exact` scheme, sponsored V1 transactions, so the buyer needs no CCD for fees). Before anything is signed, the seller must be in the registry, **Active**, with an Agent Card that matches its on-chain hash, the endpoint being paid must serve that same card at `/.well-known/agent-card.json` **and prove it holds the registered wallet's key**: it signs a fresh challenge naming the exact origin being paid, checked against the account's keys on chain. A copied badge or a copied card is not enough, and a proof relayed from the real seller names the real seller's origin, so it fails too. The x402 `payTo` must be that agent's registered wallet. **And a verified human must stand behind it:** the owner account must hold a live identity credential issued by one of the chain's Concordium identity providers (read from a node; only the provider id and the validity month, no personal data; `GG_CCD_IDP_ALLOW` narrows the accepted providers). The provider is written into the payment's audit record. Only the configured network and assets (`GG_CCD_ASSETS`, default CCD) are paid, and every authorised payment counts against the daily cap at once, whether or not the seller reports settlement. Anything else is refused and logged. If the registry can't be reached, nothing is paid.
 3. **It keeps a record.** Every decision, payment and refusal goes into an append-only, SHA-256 hash-chained log naming the agent's badge and owner (in the spirit of EU AI Act Art. 12 record keeping). The chain head is anchored in Gig Guard's own registry metadata, so the log can't be quietly rewritten afterwards.
 
 Testnet only. Claim letters are drafts that wait for the user's yes. Paid checks are bought automatically, inside the per-call and per-day caps, including the second balance reading from Ledger Check when `GG_CCD_SELLER_URL` is set.
@@ -15,13 +15,13 @@ Testnet only. Claim letters are drafts that wait for the user's yes. Paid checks
 ```bash
 npm install
 npm run demo:offline     # the whole flow with a fake registry, fake signature and fake settlement
-npm test                 # 94 tests (+1 that needs a maintainer word list, skipped without it)
+npm test                 # 96 tests (+1 that needs a maintainer word list, skipped without it)
 ```
 
 The offline walkthrough uses the real HTTP 402 flow (`@x402/express` seller, `@x402/fetch` buyer), the real payment policy and the real audit log. Only the registry answers, the signature and the settlement are faked. It shows:
 
 - one paid request to a verified agent;
-- four refusals before signing: revoked, tampered card, `payTo` switched, no badge;
+- five refusals before signing: revoked, tampered card, `payTo` switched, no badge, and a seller that passes every registry check but has no verified human behind its owner account;
 - the audit log verifying OK;
 - the same log failing after one edited byte.
 
@@ -29,7 +29,7 @@ The offline walkthrough uses the real HTTP 402 flow (`@x402/express` seller, `@x
 
 | Piece | File | What it does |
 |---|---|---|
-| Counterparty check | `src/ccd/registry.mjs` | `check_badge` and `get_agent_wallet` through Concordium's hosted Agent Registry MCP. Registered, Active, card hash, payTo binding, and the endpoint's key proof (`/.well-known/agent-proof`, verified against the account's on-chain keys). Fails closed. |
+| Counterparty check | `src/ccd/registry.mjs` | `check_badge` and `get_agent_wallet` through Concordium's hosted Agent Registry MCP. Registered, Active, card hash, payTo binding, the endpoint's key proof (`/.well-known/agent-proof`, verified against the account's on-chain keys), and the owner's identity credential (`checkOwnerIdentity`: issued by a known Concordium identity provider, not expired). Fails closed. |
 | Payment rail | `src/ccd/rail.mjs` | x402 client on `@x402/concordium`. Per-call and per-day caps checked before signing. The policy runs in `onBeforePaymentCreation` and aborts a payment it doesn't allow. |
 | A seller to hire | `src/ccd/seller.mjs` | "Ledger Check", a small paid agent selling an on-chain balance reading. It advertises its badge in every offer (`extra.agentBadge`) and runs its own facilitator with a sponsor account. |
 | Decision log | `src/ccd/audit.mjs` | Hash-chained JSONL; `gig-guard audit` recomputes the chain (exit 10 if edited). **Private**: it holds client names and full reasons, so it stays with the operator (default `~/.gig-guard/`); only its anchored head is public. Show it to an auditor, who can check it against the anchor. |
@@ -56,7 +56,7 @@ Results, with CCDExplorer links, go in `docs/LIVE.md`.
 ## Limits
 
 - Badge checks rely on the hosted registry MCP. If it is down, Gig Guard pays nobody (by design), and the run stalls.
-- "Verified" here means the card hash matches and the agent is Active. Whether the owner has passed Concordium ID depends on the owner, and the live run reports exactly what `show` returns.
+- The owner check proves that a Concordium identity provider verified the human behind the owner account. It reveals nothing about who that is, and on testnet the provider is the test one; on mainnet set `GG_CCD_IDP_ALLOW` to the providers you accept.
 - The anchor proves the log's head at a time. It does not prove nothing was logged before the first entry.
 - One seller so far, and it is ours. No independent users yet.
 

@@ -17,5 +17,8 @@ export function keyFor(address) {
 export async function fakeAccountInfo(addr) {
   const a = AccountAddress.toBase58(addr);
   return { accountAddress: AccountAddress.fromBase58(a), accountThreshold: 1,
-    accountCredentials: { 0: { value: { contents: { credentialPublicKeys: { threshold: 1, keys: { 0: { schemeId: "Ed25519", verifyKey: keyFor(a).pub } } } } } } } };
+    accountCredentials: { 0: { value: { type: "normal", contents: { ipIdentity: 0, policy: { createdAt: "202611", validTo: "209912", revealedAttributes: {} }, credentialPublicKeys: { threshold: 1, keys: { 0: { schemeId: "Ed25519", verifyKey: keyFor(a).pub } } } } } } } };
 }
+// What getIdentityProviders would answer on testnet (id + name only), and the owner check wired to these stand-ins.
+export const fakeIdentityProviders = async () => [{ id: 0, name: "Concordium testnet IP" }];
+export const fakeOwnerIdentity = async (owner) => (await import("../src/ccd/registry.mjs")).checkOwnerIdentity(owner, { getAccountInfo: fakeAccountInfo, identityProviders: fakeIdentityProviders });

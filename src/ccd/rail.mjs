@@ -96,7 +96,7 @@ export function makePayingFetch({ account = loadAccount(), scheme: injected, grp
     // synchronous, locked step: no other call can pass the cap between the check and the write.
     if (d.ok) d = withLock(auditFile, () => {
       if (spentToday(auditFile, req.asset) + BigInt(req.amount) > MAX_PER_DAY) return { ok: false, reason: `the daily cap ${MAX_PER_DAY} would be exceeded`, counterparty: d.counterparty };
-      const authorization = record("authorized", { purpose, payTo: req.payTo, amount: req.amount, asset: req.asset, network: req.network, seller_badge: d.counterparty.badge, seller_owner: d.counterparty.owner, origin: last.origin }, { file: auditFile });
+      const authorization = record("authorized", { purpose, payTo: req.payTo, amount: req.amount, asset: req.asset, network: req.network, seller_badge: d.counterparty.badge, seller_owner: d.counterparty.owner, seller_owner_idp: d.counterparty.ownerIdp?.name ?? null, origin: last.origin }, { file: auditFile });
       return { ...d, authorization };
     });
     last.decision = { ...d, req };

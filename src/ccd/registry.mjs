@@ -68,8 +68,36 @@ const STATUSES = new Set(["Active", "Suspended", "Revoked", "Inactive", "Pending
 const lastPart = (s) => String(s ?? "").split(":").pop();
 
 // Returns a normalized verdict for one badge (CIS-2 token address). `origin` = the seller endpoint being paid.
-export async function checkCounterparty(badge, { network = NETWORK, payTo = null, origin = null, call = mcpCall, fetchCard = fetchEndpointCard, fetchProof = fetchEndpointProof, verifyProof = verifyAccountProof } = {}) {
-  const out = { badge, network, ok: false, found: false, active: false, cardMatches: false, endpointBound: false, walletMatches: false, owner: null, agentWallet: null, tokenId: null, reasons: [], source: "concordium-agent-registry" };
+// The human behind the badge: the owner account must hold a live identity credential issued by one of the chain's
+// Concordium identity providers. Read from the node: only the provider id and the credential's validity month, no
+// personal data. GG_CCD_IDP_ALLOW (comma-separated provider ids) narrows the accepted providers, e.g. on mainnet.
+const ALLOW_IDP = (process.env.GG_CCD_IDP_ALLOW || "").split(",").map((x) => x.trim()).filter(Boolean).map(Number);
+async function nodeIdentityProviders() {
+  const out = []; for await (const ip of (await import("./chaintx.mjs")).nodeClient().getIdentityProviders()) out.push({ id: Number(ip.ipIdentity), name: String(ip.ipDescription?.name || "").replace(/[^\w .,()-]/g, "").slice(0, 64) });
+  return out;
+}
+export async function checkOwnerIdentity(owner, { getAccountInfo, identityProviders = nodeIdentityProviders, now = new Date(), allow = ALLOW_IDP } = {}) {
+  const res = { ok: false, idp: null, idpName: null, validTo: null, reason: null };
+  let info, ips;
+  try {
+    const addr = AccountAddress.fromBase58(owner);
+    info = getAccountInfo ? await getAccountInfo(addr) : await (await import("./chaintx.mjs")).nodeClient().getAccountInfo(addr);
+    ips = await identityProviders();
+  } catch { res.reason = "the owner's identity could not be read from the chain (fail closed)"; return res; }
+  const month = now.getUTCFullYear() * 100 + now.getUTCMonth() + 1;
+  const known = new Map((ips || []).map((ip) => [ip.id, ip.name]));
+  for (const c of Object.values(info?.accountCredentials || {})) {
+    const k = c?.value?.contents, ip = Number(k?.ipIdentity), validTo = String(k?.policy?.validTo || "");
+    if (!Number.isInteger(ip) || !known.has(ip) || (allow.length && !allow.includes(ip))) continue;
+    if (!/^\d{6}$/.test(validTo) || Number(validTo) < month) continue;   // valid through the end of the month it names
+    Object.assign(res, { ok: true, idp: ip, idpName: known.get(ip), validTo }); return res;
+  }
+  res.reason = "the owner account has no live identity credential from an accepted Concordium identity provider";
+  return res;
+}
+
+export async function checkCounterparty(badge, { network = NETWORK, payTo = null, origin = null, call = mcpCall, fetchCard = fetchEndpointCard, fetchProof = fetchEndpointProof, verifyProof = verifyAccountProof, ownerIdentity = checkOwnerIdentity } = {}) {
+  const out = { badge, network, ok: false, found: false, active: false, cardMatches: false, endpointBound: false, walletMatches: false, ownerVerified: false, ownerIdp: null, owner: null, agentWallet: null, tokenId: null, reasons: [], source: "concordium-agent-registry" };
   if (typeof badge !== "string" || !BADGE.test(badge)) { out.reasons.push("no valid Concordium badge given"); return out; }
   let b;
   try { b = await call("check_badge", { id: badge, network }); }
@@ -128,6 +156,15 @@ export async function checkCounterparty(badge, { network = NETWORK, payTo = null
       }
     }
   }
-  out.ok = out.found && out.active && out.cardMatches && out.walletMatches && out.endpointBound;
+  // Last, and only when everything else passed (one more node read): a verified human stands behind the owner account.
+  if (out.found && out.active && out.cardMatches && out.walletMatches && out.endpointBound) {
+    let id;
+    try { id = out.owner ? await ownerIdentity(out.owner) : { ok: false, reason: "registry gave no owner account" }; }
+    catch { id = { ok: false, reason: "the owner's identity could not be read from the chain (fail closed)" }; }
+    out.ownerVerified = id?.ok === true;
+    if (out.ownerVerified) out.ownerIdp = { id: id.idp, name: id.idpName, validTo: id.validTo };
+    else out.reasons.push(id?.reason || "the owner's identity is not verified");
+  }
+  out.ok = out.found && out.active && out.cardMatches && out.walletMatches && out.endpointBound && out.ownerVerified;
   return out;
 }

@@ -14,13 +14,13 @@ import path from "node:path";
 import { buyCcd, makePayingFetch, CAIP2 } from "../src/ccd/rail.mjs";
 import { buildSeller } from "../src/ccd/seller.mjs";
 import { verifyAudit, record } from "../src/ccd/audit.mjs";
-import { checkCounterparty, verifyAccountProof } from "../src/ccd/registry.mjs";
-import { keyFor, fakeAccountInfo } from "./fakekeys.mjs";
+import { checkCounterparty, checkOwnerIdentity, verifyAccountProof } from "../src/ccd/registry.mjs";
+import { keyFor, fakeAccountInfo, fakeOwnerIdentity, fakeIdentityProviders } from "./fakekeys.mjs";
 
 const SELLER = "4n3P1UDZA2usiVTS95mteZRnMB7pizRb9LcsmqrQMstnCgcE9K"; // Ledger Check's registered wallet (example)
 const OTHER = "32MAVPXN9z4s6XmkXLy4vsNpaimLcEEs95Lfna7BjBbfQ4gn8p";  // some other account
 const BUYER = "4SV3Q1ejRmi3DVNPaZGS8QRRNikquFeMpNXjnLnoNFkRYnL62R";  // Gig Guard (example)
-const GOOD = "MockVerifiedAgent11111", REVOKED = "MockRevokedAgent22222", TAMPERED = "MockTamperedCard33333";
+const GOOD = "MockVerifiedAgent11111", REVOKED = "MockRevokedAgent22222", TAMPERED = "MockTamperedCard33333", NOBODY = "MockNoHumanAgent55555";
 
 // Agent Cards in the registry's shape; their SHA-256 is the on-chain hash the fake registry reports, and each
 // seller serves its card, so the buyer can bind the badge to the endpoint it pays.
@@ -32,10 +32,14 @@ const registry = {
   [GOOD]: { checks: { on_chain_agent_found: true, status_active: true, hash_matches_on_chain: true }, on_chain: { owner_account: SELLER, status: "Active", metadata_hash_hex: sha(card(GOOD, SELLER)) }, token_id: 7 },
   [REVOKED]: { checks: { on_chain_agent_found: true, status_active: false, hash_matches_on_chain: true }, on_chain: { owner_account: SELLER, status: "Revoked", metadata_hash_hex: sha(card(REVOKED, SELLER)) }, token_id: 8 },
   [TAMPERED]: { checks: { on_chain_agent_found: true, status_active: true, hash_matches_on_chain: false }, on_chain: { owner_account: SELLER, status: "Active", metadata_hash_hex: sha("the card as registered, before the edit") }, token_id: 9 },
+  [NOBODY]: { checks: { on_chain_agent_found: true, status_active: true, hash_matches_on_chain: true }, on_chain: { owner_account: SELLER, status: "Active", metadata_hash_hex: sha(card(NOBODY, SELLER)) }, token_id: 10 },
 };
+// NOBODY passes every registry and endpoint check, but its owner account's credential names no identity provider the chain knows.
+const noHuman = (owner) => checkOwnerIdentity(owner, { identityProviders: fakeIdentityProviders,
+  getAccountInfo: async (a) => { const i = await fakeAccountInfo(a); i.accountCredentials[0].value.contents.ipIdentity = 99; return i; } });
 const call = async (name, args) => name === "check_badge" ? registry[args.id] || { checks: { on_chain_agent_found: false } } : SELLER;
 const verifyProof = (m, sig, a) => verifyAccountProof(m, sig, a, { getAccountInfo: fakeAccountInfo });   // a node would answer this
-const check = (badge, o) => checkCounterparty(badge, { ...o, call, verifyProof });
+const check = (badge, o) => checkCounterparty(badge, { ownerIdentity: badge === NOBODY ? noHuman : fakeOwnerIdentity, ...o, call, verifyProof });
 
 let n = 0;
 const scheme = { scheme: "exact", async createPaymentPayload(v, req) { return { x402Version: v, payload: { signedTransaction: { amount: req.amount, to: req.payTo }, sender: BUYER } }; } };
@@ -73,6 +77,7 @@ say("Gig Guard on Concordium: offline walkthrough (fake registry, fake signature
 step("1. The claim gate needs a second, independent balance reading. It hires the Ledger Check agent.");
 say("  Before paying, Gig Guard looks the seller up in the Agent Registry: registered? Active? Agent Card hash matches the chain? payTo = its registered wallet?");
 say("  It also binds the badge to the endpoint: the seller must serve that exact on-chain-hashed card, naming this badge and this payTo.");
+say("  Last, a human must stand behind it: the owner account needs a live identity credential from a Concordium identity provider (read from the chain, no personal data).");
 const ok = await sellerRun("Ledger Check, registered + Active + card verified, payTo = registered wallet", { badge: GOOD });
 record("decision", { gate: "claim", verdict: "CLAIM", reasons: ["wallet holds 0 USDT: payment of $400 not received", "second reading bought from an accountable agent agrees (0)"], action: "awaiting user approval", payment_tx: ok.tx }, { file: audit });
 say("  verdict: CLAIM, letter drafted, waiting for the user's yes (nothing is sent without it)");
@@ -82,10 +87,11 @@ await sellerRun("registry status Revoked", { badge: REVOKED });
 await sellerRun("Agent Card edited after registration (hash mismatch)", { badge: TAMPERED });
 await sellerRun("valid badge, but payTo switched to another account", { badge: GOOD, payTo: OTHER });
 await sellerRun("no badge at all", { badge: undefined });
+await sellerRun("everything checks out, but no verified human owns it (credential from an unknown identity provider)", { badge: NOBODY });
 
 step("3. Every payment, refusal and decision is in a hash-chained log naming the accountable parties:");
 for (const l of fs.readFileSync(audit, "utf8").trim().split("\n").map((x) => JSON.parse(x)))
-  say(`  #${l.seq} ${l.kind.padEnd(10)} agent=${l.agent_badge} ${l.kind === "refusal" ? l.reason.slice(0, 70) : l.kind === "authorized" ? `may sign ${l.amount} to ${l.payTo.slice(0, 8)}… (counted now)` : l.kind === "payment" ? `paid ${l.amount} to ${l.payTo.slice(0, 8)}…` : l.verdict}  hash ${l.hash.slice(0, 10)}…`);
+  say(`  #${l.seq} ${l.kind.padEnd(10)} agent=${l.agent_badge} ${l.kind === "refusal" ? l.reason.slice(0, 70) : l.kind === "authorized" ? `may sign ${l.amount} to ${l.payTo.slice(0, 8)}…, owner ID by ${l.seller_owner_idp} (counted now)` : l.kind === "payment" ? `paid ${l.amount} to ${l.payTo.slice(0, 8)}…` : l.verdict}  hash ${l.hash.slice(0, 10)}…`);
 const v = verifyAudit(audit);
 say(`  gig-guard audit: \x1b[32mOK\x1b[0m, ${v.entries} entries, head ${v.head.slice(0, 16)}…`);
 say(`  live run: \`setup.mjs anchor\` writes "${v.entries}:${v.head.slice(0, 16)}…" into Gig Guard's registry metadata (key gigguard.audit.head), so the head is public and dated.`);
@@ -96,4 +102,4 @@ const forged = lines.map((l, i) => (i === 0 ? l.replace(/"amount":"\d+"/, '"amou
 fs.writeFileSync(audit, forged.join("\n") + "\n");
 const bad = verifyAudit(audit);
 say(`  gig-guard audit: \x1b[31mFAIL\x1b[0m at entry #${bad.brokenAt}: ${bad.reason}`);
-say(`\nPayments settled: ${n} of 5 attempts. Refused before signing: 4. Audit log: ${audit}${process.env.GG_KEEP_DEMO ? "" : " (removed on exit; GG_KEEP_DEMO=1 keeps it)"}`);
+say(`\nPayments settled: ${n} of 6 attempts. Refused before signing: 5. Audit log: ${audit}${process.env.GG_KEEP_DEMO ? "" : " (removed on exit; GG_KEEP_DEMO=1 keeps it)"}`);

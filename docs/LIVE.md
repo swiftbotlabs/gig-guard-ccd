@@ -39,3 +39,14 @@ paid origin (checked against the account's keys on chain), payTo = registered wa
 | 2026-11-19 19:57:18 | seller shows Ledger Check's badge and wallet but serves another agent's (valid) card | REFUSED before signing: "the Agent Card served by the seller endpoint does not match the on-chain hash" | none |
 | 2026-11-19 19:57:31 | the real Ledger Check, but its key proof names another origin (what a relaying impostor would hand over) | REFUSED before signing: "the seller endpoint's key proof names another origin, badge or account" | none |
 | 2026-11-19 19:57:41 | audit log (34 entries) head anchored on chain; `check-anchor` OK (34 of 34 anchored, tail OK) | | [35905beb95…](https://ccdexplorer.io/testnet/transaction/35905beb95fea8d5c3e9a15c71ebd30e0f65bc31b3179972965de9124b00fed2) |
+
+## Owner identity check (read-only, 2026-11-20 15:47 UTC, testnet node)
+
+`checkOwnerIdentity` read both owner accounts from `grpc.testnet.concordium.com` (no transaction; nothing signed):
+
+| Agent | Owner account | Identity credential |
+|---|---|---|
+| Gig Guard (token 1272) | 3whFmR7A… | issued by identity provider 0, "Concordium testnet IP", valid to 2027-11: **verified human** |
+| Ledger Check (token 1273) | 3dVtNczd… | issued by identity provider 0, "Concordium testnet IP", valid to 2027-11: **verified human** |
+
+From this version on, a seller whose owner has no such credential is refused before signing (offline demo case 6, `test/security.test.mjs`).

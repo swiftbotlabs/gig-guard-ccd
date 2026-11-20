@@ -35,10 +35,10 @@ const fakeCall = async (name, args) => {
   if (name === "check_badge") return registry[args.id] || { checks: { on_chain_agent_found: false } };
   if (name === "get_agent_wallet") return SELLER;
 };
-import { keyFor, fakeAccountInfo } from "../demo/fakekeys.mjs";
+import { keyFor, fakeAccountInfo, fakeOwnerIdentity } from "../demo/fakekeys.mjs";
 import { verifyAccountProof } from "../src/ccd/registry.mjs";
 const verifyProof = (m, sig, a) => verifyAccountProof(m, sig, a, { getAccountInfo: fakeAccountInfo });
-const check = (badge, o) => checkCounterparty(badge, { ...o, call: fakeCall, verifyProof });
+const check = (badge, o) => checkCounterparty(badge, { ownerIdentity: fakeOwnerIdentity, ...o, call: fakeCall, verifyProof });
 
 // Fake signing scheme and facilitator: the payload is a stand-in for the sender-signed V1 transaction.
 let settled = 0;
@@ -125,11 +125,13 @@ test("ccd: editing or deleting an audit entry is detected", async () => {
   assert.equal(verifyAudit(auditFile).ok, false);
 });
 
-test("ccd: the offline walkthrough runs with no accounts and shows 1 payment, 4 refusals and a caught edit", async () => {
+test("ccd: the offline walkthrough runs with no accounts and shows 1 payment, 5 refusals (one for an owner with no verified identity) and a caught edit", async () => {
   const { execFileSync } = await import("node:child_process");
   const out = execFileSync(process.execPath, [new URL("../demo/offline.mjs", import.meta.url).pathname], { encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } }).replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(out, /Payments settled: 1 of 5 attempts\. Refused before signing: 4/);
-  assert.match(out, /audit: OK, 7 entries/);
+  assert.match(out, /Payments settled: 1 of 6 attempts\. Refused before signing: 5/);
+  assert.match(out, /no live identity credential from an accepted Concordium identity provider/);
+  assert.match(out, /owner ID by Concordium testnet IP/);
+  assert.match(out, /audit: OK, 8 entries/);
   assert.match(out, /audit: FAIL at entry #0: entry edited/);
 });
 
@@ -205,4 +207,22 @@ test("claim: an unreadable seller balance is refused as evidence; a failed selle
   assert.ok(b.uncertainty.includes("Concordium seller failed"), JSON.stringify(b.uncertainty));
   assert.doesNotMatch(JSON.stringify([b.reasons, b.uncertainty]), /poison/i);
   assert.match(JSON.stringify(b.notes), /POISON/);
+});
+
+// The human behind the badge: the owner's identity credential must come from a known identity provider and still be valid.
+test("owner identity: a live credential from a known identity provider passes; unknown provider, expired, none or unreadable fail closed", async () => {
+  const { checkOwnerIdentity } = await import("../src/ccd/registry.mjs");
+  const { fakeIdentityProviders } = await import("../demo/fakekeys.mjs");
+  const info = (cred) => async () => ({ accountCredentials: cred === null ? {} : { 0: { value: { type: "normal", contents: cred } } } });
+  const now = new Date("2026-11-20T00:00:00Z");
+  const run = (cred, o = {}) => checkOwnerIdentity(SELLER, { getAccountInfo: info(cred), identityProviders: fakeIdentityProviders, now, ...o });
+  const good = await run({ ipIdentity: 0, policy: { validTo: "202711" } });
+  assert.deepEqual([good.ok, good.idp, good.idpName, good.validTo], [true, 0, "Concordium testnet IP", "202711"]);
+  assert.equal((await run({ ipIdentity: 0, policy: { validTo: "202611" } })).ok, true, "valid through the end of its month");
+  for (const [why, cred, o] of [["unknown provider", { ipIdentity: 99, policy: { validTo: "202711" } }], ["expired", { ipIdentity: 0, policy: { validTo: "202610" } }],
+    ["no credential", null], ["malformed month", { ipIdentity: 0, policy: { validTo: "2027-11" } }], ["not on the allow-list", { ipIdentity: 0, policy: { validTo: "202711" } }, { allow: [3] }],
+    ["node down", { ipIdentity: 0, policy: { validTo: "202711" } }, { identityProviders: async () => { throw new Error("UNAVAILABLE"); } }]]) {
+    const r = await run(cred, o);
+    assert.equal(r.ok, false, why); assert.match(r.reason, /identity/, why);
+  }
 });

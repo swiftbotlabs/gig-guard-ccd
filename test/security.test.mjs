@@ -29,11 +29,11 @@ const entry = (badge, owner) => ({ checks: { on_chain_agent_found: true, status_
   on_chain: { owner_account: owner, status: "Active", metadata_hash_hex: sha(CARDS[badge]) }, token_id: 7 });
 const registry = { [GOOD]: entry(GOOD, SELLER), [SECOND]: entry(SECOND, OTHER) };
 const call = async (name, args) => name === "check_badge" ? registry[args.id] || { checks: { on_chain_agent_found: false } } : registry[GOOD] && args.token_id ? SELLER : null;
-import { keyFor, fakeAccountInfo } from "../demo/fakekeys.mjs";
+import { keyFor, fakeAccountInfo, fakeOwnerIdentity } from "../demo/fakekeys.mjs";
 import { verifyAccountProof, proofMessage } from "../src/ccd/registry.mjs";
 import { AccountAddress, signMessage } from "@concordium/web-sdk";
 const verifyProof = (m, sig, a) => verifyAccountProof(m, sig, a, { getAccountInfo: fakeAccountInfo });
-const check = (badge, o) => checkCounterparty(badge, { ...o, call, verifyProof });
+const check = (badge, o) => checkCounterparty(badge, { ownerIdentity: fakeOwnerIdentity, ...o, call, verifyProof });
 const sign = (account, message, by = account) => signMessage(AccountAddress.fromBase58(account), message, keyFor(by).signer);
 
 // Counts what the buyer actually signed, whatever happens after.
@@ -368,4 +368,21 @@ test("seller: bodies are parsed only after the rate limit, so broken JSON counts
     for (let i = 0; i < 5; i++) codes.push((await fetch(base + "/v1/balance", { method: "POST", headers: { "content-type": "application/json" }, body: "{not json" })).status);
     assert.deepEqual(codes.slice(3), [429, 429], codes.join(","));
   });
+});
+test("identity: a seller that passes every registry and endpoint check is refused before signing when no verified human owns it", async () => {
+  const { checkOwnerIdentity } = await import("../src/ccd/registry.mjs");
+  const { fakeIdentityProviders } = await import("../demo/fakekeys.mjs");
+  const noHuman = (owner) => checkOwnerIdentity(owner, { identityProviders: fakeIdentityProviders,
+    getAccountInfo: async (a) => { const i = await fakeAccountInfo(a); i.accountCredentials[0].value.contents.ipIdentity = 99; return i; } });
+  const h = await hostile({ accepts: [offer()], cardBody: CARDS[GOOD] });
+  const s = signer(), ok = signer(), auditFile = tmp();
+  try {
+    const r = await buyCcd(h.url, { body: {}, auditFile, payingFetch: makePayingFetch({ account: { address: BUYER }, scheme: s.scheme, auditFile,
+      check: (b, o) => checkCounterparty(b, { ...o, call, verifyProof, ownerIdentity: noHuman }) }) });
+    assert.equal(r.ok, false); assert.match(r.reason, /identity credential/); assert.equal(s.count, 0, "nothing signed");
+    const r2 = await buy(h.url, ok, tmp());   // same seller, owner verified: paid, and the provider is in the authorisation record
+    assert.equal(ok.count, 1, JSON.stringify(r2).slice(0, 300));
+  } finally { h.close(); }
+  const rec = fs.readFileSync(auditFile, "utf8");
+  assert.doesNotMatch(rec, /"kind":"authorized"/);
 });
