@@ -269,6 +269,19 @@ test("poison (no-space): miner_id, receipt fields, result text and x402 refusals
   assert.doesNotMatch(JSON.stringify(publicLedger()) + JSON.stringify(publicLedger(crafted)), /poison/i);
 });
 
+// review 8, positive controls: the x402 refusal check itself, and scheme:// link masking in public reasons
+test("x402 refusal names the field only; any scheme:// link is masked in public text", async () => {
+  const { x402Refusal } = await import("../src/telegraph.mjs");
+  const { publicLedger } = await import("../src/redact.mjs");
+  const PN = "sk_live_POISONx.Jane.Poisonname:acme-unpaid.example|";
+  for (const r of [{ scheme: PN }, { scheme: "exact", network: PN }, { scheme: "exact", network: "eip155:84532", asset: PN }, { scheme: "exact", network: "eip155:84532", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", amount: PN }]) {
+    const why = x402Refusal(r);
+    assert.ok(why, JSON.stringify(r)); assert.doesNotMatch(why, /poison/i, why);
+  }
+  const pub = JSON.stringify(publicLedger([{ ts: "2026-11-20T00:00:00Z", kind: "decision", gate: "scout", verdict: "CAUTION", input: {}, reasons: ["see ftp://acme-secret.example/x and ipfs://bafyPOISON"], uncertainty: [] }]));
+  assert.doesNotMatch(pub, /acme-secret|bafyPOISON/, pub);
+});
+
 test("reuse: the same fresh question is answered from the ledger, not paid twice", async () => {
   process.env.GG_REUSE = "1";
   const { readLedger } = await import("../src/ledger.mjs");
@@ -318,7 +331,14 @@ test("ship: miner findings are corroborated by local rules, or marked miner-only
 });
 test("verify: receipts are checked against the node's epoch blocks", async () => {
   const { verifyReceipt } = await import("../src/verify.mjs");
-  assert.equal((await verifyReceipt({ receipt_hash: "0xaa", epoch_id: 8, intent: "WALLET_BALANCE_CHECK_GENERAL", amount_uusdc: 10000 })).status, "SETTLED");
-  assert.equal((await verifyReceipt({ receipt_hash: "0xbad", epoch_id: 8, intent: "WALLET_BALANCE_CHECK_GENERAL", amount_uusdc: 10000 })).status, "MISMATCH");
-  assert.equal((await verifyReceipt({ receipt_hash: "0xaa", epoch_id: 9 })).status, "PENDING");
+  const H = (x) => "0x" + x.padStart(64, "0");
+  assert.equal((await verifyReceipt({ receipt_hash: H("aa"), epoch_id: 8, intent: "WALLET_BALANCE_CHECK_GENERAL", amount_uusdc: 10000 })).status, "SETTLED");
+  assert.equal((await verifyReceipt({ receipt_hash: H("bad"), epoch_id: 8, intent: "WALLET_BALANCE_CHECK_GENERAL", amount_uusdc: 10000 })).status, "MISMATCH");
+  assert.equal((await verifyReceipt({ receipt_hash: H("aa"), epoch_id: 9 })).status, "PENDING");
+  // review 8: node-supplied receipt fields are validated before they are looked up or copied out
+  const PN = "sk_live_POISONx.Jane.Poisonname:acme-unpaid.example|";
+  for (const rc of [{ receipt_hash: PN, epoch_id: 8 }, { receipt_hash: "0x" + "ab".repeat(32), epoch_id: PN }, { receipt_hash: "0x" + "ab".repeat(32) + "/../x", epoch_id: 8 }]) {
+    const v = await verifyReceipt(rc);
+    assert.match(v.status, /INVALID|NO_EPOCH/); assert.doesNotMatch(JSON.stringify(v), /poison|\.\./i, JSON.stringify(v));
+  }
 });

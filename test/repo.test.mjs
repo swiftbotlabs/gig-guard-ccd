@@ -35,7 +35,7 @@ test("repo: default ledger and audit paths are outside the repository", () => {
 test("cli: a deliverable or terms file outside the workspace is refused before any purchase", () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ggws-"));
   const env = { ...process.env, GG_WORKSPACE: ws, TELEGRAPH_NODE: "http://127.0.0.1:9", TELEGRAPH_PAYER_KEY: "0x" + "11".repeat(32), GG_LEDGER: path.join(ws, "l.jsonl"), GG_AUDIT: path.join(ws, "a.jsonl") };
-  for (const args of [["ship", "/etc/passwd"], ["ship", path.join(ws, path.relative(ws, "/etc/hostname"))], ["claim", JSON.stringify({ wallet: "0x" + "33".repeat(20), chain: "ethereum", token: "USDT", client: "Acme", amountUsd: 5, termsFile: "/etc/passwd" })]]) {
+  for (const args of [["ship", "/etc/passwd"], ["ship", ws + "/" + path.relative(ws, "/etc/hostname")], ["claim", JSON.stringify({ wallet: "0x" + "33".repeat(20), chain: "ethereum", token: "USDT", client: "Acme", amountUsd: 5, termsFile: "/etc/passwd" })]]) {
     let err = "";
     try { execFileSync(process.execPath, [path.join(ROOT, "src/cli.mjs"), ...args], { env, encoding: "utf8", stdio: "pipe" }); } catch (e) { err = String(e.stderr); }
     assert.match(err, /outside the workspace/, `${args[0]} ${args[1].slice(0, 40)}: ${err.slice(0, 200)}`);

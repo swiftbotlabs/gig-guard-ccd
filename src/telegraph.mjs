@@ -7,6 +7,14 @@ import { config } from "./config.mjs";
 import { append, spentToday } from "./ledger.mjs";
 
 let paidFetch, payer, lastSigned = null;
+// The x402 refusal check, exported for tests. Fixed text only: the node's own field values are never echoed (errors land in the ledger,
+// whose error lines are public).
+export function x402Refusal(r) {
+  const bad = r?.scheme !== "exact" ? "scheme" : r.network !== config.network ? "network"
+    : String(r.asset).toLowerCase() !== String(config.assets[config.network]).toLowerCase() ? "asset"
+    : !AMOUNT.test(String(r.amount)) ? "amount" : Number(r.amount) > config.maxPerCall ? `amount over the per-call cap ${config.maxPerCall}` : null;
+  return bad ? `refused before signing: ${bad}` : null;
+}
 export class BudgetError extends Error { name = "BudgetError"; }
 export class PaymentRefused extends Error { name = "PaymentRefused"; }
 const AMOUNT = /^[1-9][0-9]{0,15}$/;   // micro-USDC, positive integer, nothing else
@@ -30,11 +38,8 @@ function client() {
     spendControls: { allowedAssets: [{ network: config.network, asset: config.assets[config.network], maxAmountPerPayment: String(config.maxPerCall) }] },
   });
   c.onBeforePaymentCreation(async ({ selectedRequirements: r }) => {
-    // fixed text only: the node's own field values are never echoed (errors land in the ledger, whose error lines are public)
-    const bad = r.scheme !== "exact" ? "scheme" : r.network !== config.network ? "network"
-      : String(r.asset).toLowerCase() !== String(config.assets[config.network]).toLowerCase() ? "asset"
-      : !AMOUNT.test(String(r.amount)) ? "amount" : Number(r.amount) > config.maxPerCall ? `amount over the per-call cap ${config.maxPerCall}` : null;
-    if (bad) return { abort: true, reason: `refused before signing: ${bad}` };
+    const reason = x402Refusal(r);
+    if (reason) return { abort: true, reason };
     try { reserve(Number(r.amount), { rail: "x402", network: r.network, asset: r.asset, payTo: r.payTo }); }
     catch (e) { return { abort: true, reason: e.message }; }
   });

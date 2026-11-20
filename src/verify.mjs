@@ -7,8 +7,11 @@ import { config } from "./config.mjs";
 import { readLedger } from "./ledger.mjs";
 
 export async function verifyReceipt(rc, node = config.node) {
-  const h = rc?.receipt_hash, e = rc?.epoch_id;
-  if (!h || e === undefined) return { receipt_hash: h, status: "NO_EPOCH", note: "receipt has no epoch (x402 exact receipts settle by tx instead)" };
+  // only a well-formed hash and an integer epoch are looked up or copied out (both come from the node's receipt header)
+  const h = /^0x[0-9a-fA-F]{64}$/.test(String(rc?.receipt_hash)) ? rc.receipt_hash : null;
+  const e = Number.isInteger(rc?.epoch_id) && rc.epoch_id >= 0 ? rc.epoch_id : null;
+  if (!h) return { receipt_hash: null, status: "INVALID", note: "receipt hash is not 0x + 64 hex" };
+  if (e === null) return { receipt_hash: h, status: "NO_EPOCH", note: "receipt has no epoch (x402 exact receipts settle by tx instead)" };
   let r, j;
   try { r = await fetch(`${node}/v1/blocks/${e}/deliveries/${h}`, { signal: AbortSignal.timeout(15000) }); j = await r.json(); }
   catch { return { receipt_hash: h, epoch_id: e, status: "UNREACHABLE", note: "node unreachable" }; }

@@ -272,6 +272,16 @@ test("seller: bad JSON, an oversized body and wrong methods get fixed errors, ne
     assert.equal(bad.status, 400, t1); assert.equal(big.status, 413, t2);
     for (const t of [t1, t2]) { assert.doesNotMatch(t, /node_modules|\bat \w+ \(|Error:|\/data\/|\/home\//, t); }
     assert.equal((await fetch(`${base}/v1/balance`)).status, 404);
+    const head = await fetch(`${base}/v1/balance`, { method: "HEAD" }); assert.equal(head.status, 404);   // our allow-list answers, not a route
+    const opt = await fetch(`${base}/v1/balance`, { method: "PUT" }); assert.equal(opt.status, 404); assert.deepEqual(await opt.json(), { error: "not found" });
+    // Object.hasOwn: prototype names are not chains or tokens (a paid request, so the handler itself answers)
+    const ch = await fetch(`${base}/v1/balance`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const req = JSON.parse(Buffer.from(ch.headers.get("payment-required"), "base64").toString()).accepts[0];
+    const pay = Buffer.from(JSON.stringify({ x402Version: 2, accepted: req, payload: { signedTransaction: { amount: req.amount, to: req.payTo }, sender: BUYER } })).toString("base64");
+    for (const [chain, token] of [["constructor", "USDT"], ["constructor", "0x" + "22".repeat(20)], ["toString", "0x" + "22".repeat(20)], ["__proto__", "USDT"], ["toString", "USDT"], ["ethereum", "constructor"], ["ethereum", "__proto__"]]) {
+      const r = await fetch(`${base}/v1/balance`, { method: "POST", headers: { "content-type": "application/json", "payment-signature": pay, "x-payment": pay }, body: JSON.stringify({ address: "0x" + "11".repeat(20), chain, token }) });
+      assert.equal(r.status, 400, `${chain}/${token}: ${r.status}`);
+    }
     assert.equal((await fetch(`${base}/.well-known/agent-card.json`, { method: "POST" })).status, 404);
     assert.equal((await fetch(`${base}/.well-known/agent-proof?nonce=${"ab".repeat(16)}`, { method: "DELETE" })).status, 404);
   });

@@ -49,7 +49,6 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
     const m = EXACT.get(raw);
     return m && (req.method === m || (m === "GET" && req.method === "HEAD")) ? next() : res.status(404).json({ error: "not found" });
   });
-  app.use(express.json({ limit: "4kb" }));
   // The exact bytes whose hash is on chain (buyers bind the badge to this endpoint with it). Read once at start.
   const cardBytes = card == null ? null : Buffer.from(card);
   app.get("/.well-known/agent-card.json", (req, res) => {
@@ -73,6 +72,7 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
   };
   app.use("/v1/balance", limit("paid"));
   app.use("/.well-known/agent-proof", limit("proof"));
+  app.use("/v1/balance", express.json({ limit: "4kb" }));   // parsed only after the rate limit, so bad or oversized bodies count too
   // Key proof: sign the buyer's fresh nonce with the seller's own wallet key, for our configured origin only, so a
   // copycat endpoint serving our card can't borrow it (a relayed proof names our origin, not the copycat's).
   app.get("/.well-known/agent-proof", async (req, res) => {
