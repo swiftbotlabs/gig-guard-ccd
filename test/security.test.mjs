@@ -362,3 +362,10 @@ test("seller: requests over the rate limit get 429 before any payment is taken",
     assert.deepEqual(codes, [402, 402, 402, 429, 429]);
   });
 });
+test("seller: bodies are parsed only after the rate limit, so broken JSON counts against it too", async () => {
+  await seller({ rateLimit: { max: 3, windowMs: 60000 } }, async (base) => {
+    const codes = [];
+    for (let i = 0; i < 5; i++) codes.push((await fetch(base + "/v1/balance", { method: "POST", headers: { "content-type": "application/json" }, body: "{not json" })).status);
+    assert.deepEqual(codes.slice(3), [429, 429], codes.join(","));
+  });
+});

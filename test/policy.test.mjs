@@ -274,10 +274,14 @@ test("x402 refusal names the field only; any scheme:// link is masked in public 
   const { x402Refusal } = await import("../src/telegraph.mjs");
   const { publicLedger } = await import("../src/redact.mjs");
   const PN = "sk_live_POISONx.Jane.Poisonname:acme-unpaid.example|";
-  for (const r of [{ scheme: PN }, { scheme: "exact", network: PN }, { scheme: "exact", network: "eip155:84532", asset: PN }, { scheme: "exact", network: "eip155:84532", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", amount: PN }]) {
-    const why = x402Refusal(r);
-    assert.ok(why, JSON.stringify(r)); assert.doesNotMatch(why, /poison/i, why);
+  // each case is valid except one poisoned field, so every single check has its own positive control
+  const ok = { scheme: "exact", network: "eip155:84532", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", amount: "1000" };
+  assert.equal(x402Refusal(ok), null);
+  for (const field of ["scheme", "network", "asset", "amount"]) {
+    const why = x402Refusal({ ...ok, [field]: PN });
+    assert.equal(why, `refused before signing: ${field}`, field); assert.doesNotMatch(why, /poison/i, why);
   }
+  assert.match(x402Refusal({ ...ok, amount: "999999999999" }), /^refused before signing: amount over the per-call cap \d+$/);
   const pub = JSON.stringify(publicLedger([{ ts: "2026-11-20T00:00:00Z", kind: "decision", gate: "scout", verdict: "CAUTION", input: {}, reasons: ["see ftp://acme-secret.example/x and ipfs://bafyPOISON"], uncertainty: [] }]));
   assert.doesNotMatch(pub, /acme-secret|bafyPOISON/, pub);
 });
