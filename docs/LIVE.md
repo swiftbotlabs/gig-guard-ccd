@@ -50,3 +50,38 @@ paid origin (checked against the account's keys on chain), payTo = registered wa
 | Ledger Check (token 1273) | 3dVtNczd… | issued by identity provider 0, "Concordium testnet IP", valid to 2027-11: **verified human** |
 
 From this version on, a seller whose owner has no such credential is refused before signing (offline demo case 6, `test/security.test.mjs`).
+| 2026-11-20 22:00:57 | anchor audit head, token 1272 | ok, 16:26b461288441861481482… | [c74cd34f5a…](https://ccdexplorer.io/testnet/transaction/c74cd34f5a7b70c5a065acd6439df298cdef5b0b903852114edac37280182260) |
+
+## Other people's agents, checked live (read-only, 2026-11-21 06:41, `node src/ccd/survey.mjs 8 3`)
+
+Gig Guard's registry-side checks run against agents registered by 11 other owners on testnet (the newest Active ones and recently revoked ones; one per owner; ours excluded). Nothing was signed or paid. The endpoint key proof and payTo binding need a live x402 seller, so they are not part of this survey, and without them Gig Guard would still refuse to pay.
+
+| Token | Status | Card matches on-chain hash | Owner has a live IdP credential | Registry-side verdict |
+|---|---|---|---|---|
+| 1369 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1368 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1367 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1362 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1361 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1350 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1346 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1345 | Active | yes | yes (Concordium testnet IP) | pass |
+| 1357 | Revoked | not served | yes (Concordium testnet IP) | refuse: status Revoked; card not served at its agent_uri |
+| 1299 | Revoked | yes | yes (Concordium testnet IP) | refuse: status Revoked |
+| 1277 | Revoked | not served | yes (Concordium testnet IP) | refuse: status Revoked; card not served at its agent_uri |
+
+8 of 11 would pass these checks; all 3 revoked agents are refused.
+
+## The anchor, over time
+
+The log head has been anchored five times, so a judge can see the log checked as it grows, not at one point:
+
+| When (UTC) | Log | Anchored head | Transaction |
+|---|---|---|---|
+| 2026-11-19 09:53:37 | private live log | 8 entries | c7b8670711… |
+| 2026-11-19 09:58:45 | private live log | 10 entries | cc1053b53e… |
+| 2026-11-19 19:45:13 | private live log | 21 entries | 853cbb50fb… |
+| 2026-11-19 19:57:41 | private live log | 34 entries | 35905beb95… |
+| 2026-11-20 22:00:57 | public run log (`gigguard.audit.public.head`) | 16 entries | c74cd34f5a… |
+
+Each later anchor of the same log covers its earlier entries: `check-anchor` passes on the grown log and fails if anything already anchored is edited.

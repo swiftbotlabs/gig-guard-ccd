@@ -35,6 +35,7 @@ The offline walkthrough uses the real HTTP 402 flow (`@x402/express` seller, `@x
 | Decision log | `src/ccd/audit.mjs` | Hash-chained JSONL; `gig-guard audit` recomputes the chain (exit 10 if edited). **Private**: it holds client names and full reasons, so it stays with the operator (default `~/.gig-guard/`); only its anchored head is public. Show it to an auditor, who can check it against the anchor. |
 | On-chain setup | `src/ccd/setup.mjs`, `src/ccd/chaintx.mjs` | `card`, `register`, `badge`, `anchor`, `revoke` and `show`. The registry MCP builds the contract call; we sign it with our own key. Every write is appended to `docs/LIVE.md` with its CCDExplorer link. |
 | Anchor check | `setup.mjs check-anchor` | Reads the anchored head back from the registry (free, no node access) and checks the log against it. Appending is fine; rewriting anything anchored fails. |
+| Survey of other agents | `src/ccd/survey.mjs` | Read-only: runs the registry-side checks (found, Active, card hash, a live IdP credential behind the owner) on agents other people registered. Results in `docs/LIVE.md`. |
 | Where it's used | `src/guards.mjs` | The claim gate buys a second balance reading from Ledger Check when `GG_CCD_SELLER_URL` is set. Disagreement or a refusal lands in the decision's `uncertainty`. |
 
 ## Live testnet run
