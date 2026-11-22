@@ -92,3 +92,9 @@ Each later anchor of the same log covers its earlier entries: `check-anchor` pas
 
 | Time (UTC) | Step | Result | Transaction |
 |---|---|---|---|
+| 2026-11-22 00:16:51 | anchor audit head (public.head), token 1272 | ok, 18:3cc0d7b827e985eeb89c3… | [8dce06ffcc…](https://ccdexplorer.io/testnet/transaction/8dce06ffcca089aaad2517e77fe7a18a59e8423858c0ffe70f9266e4fe1e3b3f) |
+| 2026-11-22 03:16:51 | anchor audit head (public.head), token 1272 | ok, 20:5bda052ac7cb16f4be618… | [d56e698309…](https://ccdexplorer.io/testnet/transaction/d56e698309db8d7273782c53e159dbb199151ff9fb2653bc34fce15ea1ca4d0a) |
+| 2026-11-22 06:16:53 | anchor audit head (public.head), token 1272 | ok, 22:1cda63861fc6c5c27b8b3… | [c166d9e6b2…](https://ccdexplorer.io/testnet/transaction/c166d9e6b2ca4083e64646329080f39ff263d56fb768449649853eab138a7a05) |
+| 2026-11-22 09:16:51 | anchor audit head (public.head), token 1272 | ok, 24:a08bc9b9f3883e6a05410… | [a09a4adc59…](https://ccdexplorer.io/testnet/transaction/a09a4adc59c4f8c4fccbcdaa2fd13b87014f2b6e5a8cd920a933bbc5566b340b) |
+| 2026-11-22 12:16:53 | anchor audit head (public.head), token 1272 | ok, 26:e4c0514433931656c24a3… | [44eefeed3b…](https://ccdexplorer.io/testnet/transaction/44eefeed3b5ffbface4cc519e228d03ebf5e50acd49fdde32623d766eb7eb5eb) |
+| 2026-11-22 15:16:53 | anchor audit head (public.head), token 1272 | ok, 28:0f672e316687d10ffa2f5… | [d6e011250a…](https://ccdexplorer.io/testnet/transaction/d6e011250a407923bae5ba30cf4f701100a65930c41f529040010d1c14733be5) |
