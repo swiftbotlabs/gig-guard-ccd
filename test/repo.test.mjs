@@ -21,7 +21,11 @@ const shipped = () => files().filter((f) => !/package-lock\.json$|\.(mp4|png|jpg
 test("repo: .gitignore keeps logs, keys and dependencies out", () => {
   const gi = fs.existsSync(path.join(ROOT, ".gitignore")) ? fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8") : "";
   for (const p of ["node_modules/", "*.jsonl", "*.export", ".env"]) assert.ok(gi.split("\n").includes(p), `.gitignore lacks ${p}`);
-  for (const f of shipped()) assert.doesNotMatch(path.basename(f), /\.jsonl$|\.export$|^\.env$/, `${path.relative(ROOT, f)} would be published`);
+  // The one log meant for publication: the public testnet run (no client data), checked against its own anchor. Named one by one.
+  const PUBLIC = new Set(["docs/public-run/audit-public.jsonl"]);
+  for (const f of PUBLIC) assert.ok(gi.split("\n").includes("!" + f), `.gitignore must name the public log ${f} explicitly`);
+  for (const f of shipped()) if (!PUBLIC.has(path.relative(ROOT, f))) assert.doesNotMatch(path.basename(f), /\.jsonl$|\.export$|^\.env$/, `${path.relative(ROOT, f)} would be published`);
+  for (const f of PUBLIC) if (fs.existsSync(path.join(ROOT, f))) assert.doesNotMatch(fs.readFileSync(path.join(ROOT, f), "utf8"), /\/home\/|\/data\/|\/Users\/|secret|BEGIN|privateKey|signKey/i, `${f} holds a local path or key material`);
 });
 test("repo: default ledger and audit paths are outside the repository", () => {
   const env = { ...process.env }; delete env.GG_LEDGER; delete env.GG_AUDIT; delete env.GG_DATA_DIR;

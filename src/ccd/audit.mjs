@@ -55,3 +55,20 @@ export function verifyAnchor(file = AUDIT_FILE, anchored) {
   if (n && JSON.parse(lines[n - 1]).hash !== head) return { ok: false, reason: `entry ${n - 1} no longer has the anchored hash` };
   return { ok: true, anchored_entries: n, total_entries: lines.length, after_anchor: lines.length - n, tail_ok: v.ok };
 }
+
+// What a (scheduled) re-anchor may do, given the head already on chain ("N:hash" or null):
+//   refuse  the log no longer reaches the head on chain (an anchored entry was edited, removed, or the whole log re-hashed):
+//           anchoring it would launder the rewrite, so nothing is written and the run fails loudly;
+//   skip    nothing new since the last anchor;
+//   anchor  the log verifies, still reaches the old head, and has grown: write "entries:head".
+export function planAnchor(file = AUDIT_FILE, current = null) {
+  const v = verifyAudit(file);
+  if (!v.ok) return { action: "refuse", reason: `log broken at entry ${v.brokenAt}: ${v.reason}` };
+  if (!v.entries) return { action: "skip", reason: "log is empty" };
+  if (current) {
+    const a = verifyAnchor(file, current);
+    if (!a.ok) return { action: "refuse", reason: `the log no longer matches the head already on chain (${a.reason})` };
+    if (a.after_anchor === 0) return { action: "skip", reason: `nothing new since the anchor at ${a.anchored_entries} entries` };
+  }
+  return { action: "anchor", value: `${v.entries}:${v.head}`, entries: v.entries };
+}

@@ -71,6 +71,8 @@ const lastPart = (s) => String(s ?? "").split(":").pop();
 // The human behind the badge: the owner account must hold a live identity credential issued by one of the chain's
 // Concordium identity providers. Read from the node: only the provider id and the credential's validity month, no
 // personal data. GG_CCD_IDP_ALLOW (comma-separated provider ids) narrows the accepted providers, e.g. on mainnet.
+// On testnet the "Concordium testnet IP" (id 0) issues test identities without document checks; on mainnet use 1,2,3
+// (Notabene, Digital Trust Solutions, Global FinReg, read from a mainnet node on 22 Nov 2026). See docs/MAINNET.md.
 const ALLOW_IDP = (process.env.GG_CCD_IDP_ALLOW || "").split(",").map((x) => x.trim()).filter(Boolean).map(Number);
 let IP_CACHE = null;   // the provider list changes rarely: read it at most every 10 minutes
 async function nodeIdentityProviders() {

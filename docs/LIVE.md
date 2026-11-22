@@ -85,3 +85,10 @@ The log head has been anchored five times, so a judge can see the log checked as
 | 2026-11-20 22:00:57 | public run log (`gigguard.audit.public.head`) | 16 entries | c74cd34f5a… |
 
 Each later anchor of the same log covers its earlier entries: `check-anchor` passes on the grown log and fails if anything already anchored is edited.
+
+## Scheduled re-check + re-anchor (every 3 hours)
+
+`src/ccd/schedule.mjs`, run by `deploy/gigguard-schedule.timer` on the public-run log (`docs/public-run/audit-public.jsonl`, key `gigguard.audit.public.head`). Each run reads the head on chain and stops if the log no longer reaches it, re-checks Ledger Check (must stay Active) and the revoked throwaway (must stay refused) in the registry, logs one `recheck` decision for each, then anchors the grown log. Check the published copy yourself: `GG_CCD_ANCHOR_KEY=gigguard.audit.public.head node src/ccd/setup.mjs check-anchor 1272 docs/public-run/audit-public.jsonl`; any earlier anchor below works with `--at <entries:hash>`.
+
+| Time (UTC) | Step | Result | Transaction |
+|---|---|---|---|

@@ -7,3 +7,4 @@ node_modules/
 *.lock
 ledger.html
 ledger.public.jsonl
+!docs/public-run/audit-public.jsonl

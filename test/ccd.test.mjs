@@ -315,3 +315,50 @@ test("seller gate: payerOf reads only the signed transaction's sender; malformed
   for (const bad of [undefined, "", "!!notbase64", enc({ payload: { sender: BUYER } }), enc({ payload: { signedTransaction: { header: { sender: "0xdead" } } } }),
     enc({ payload: { signedTransaction: { header: { sender: { toString: () => BUYER } } } } }), "A".repeat(20000), enc("just a string")]) assert.equal(payerOf(hdr(bad)), null, String(bad).slice(0, 40));
 });
+
+// Judge to-do (11-22): a rewrite that recomputes every hash passes the chain check, so only the anchor catches it,
+// and the scheduled re-anchor must refuse to anchor such a log (anchoring it would launder the rewrite).
+test("ccd: a full rewrite (edit + every later hash recomputed) passes the chain check but fails the anchor; re-anchor refuses it", async () => {
+  const { record, verifyAnchor, planAnchor } = await import("../src/ccd/audit.mjs");
+  const crypto = await import("node:crypto");
+  const file = tmp();
+  for (let i = 0; i < 4; i++) record("payment", { amount: "100000", i }, { file });
+  const v = verifyAudit(file), anchor = `${v.entries}:${v.head}`;
+  assert.deepEqual(planAnchor(file, anchor).action, "skip");                       // nothing new
+  record("decision", { gate: "recheck" }, { file });
+  const grown = planAnchor(file, anchor);
+  assert.equal(grown.action, "anchor"); assert.match(grown.value, /^5:[0-9a-f]{64}$/);
+  assert.equal(planAnchor(file, null).action, "anchor");                           // first anchor
+  // rewrite entry 1 and recompute every hash after it
+  const sortDeep = (x) => Array.isArray(x) ? x.map(sortDeep) : x && typeof x === "object" ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, sortDeep(x[k])])) : x;
+  const lines = fs.readFileSync(file, "utf8").trim().split("\n"); let prev = JSON.parse(lines[0]).hash; const out = [lines[0]];
+  for (const l of lines.slice(1)) {
+    const { hash, ...b } = JSON.parse(l); if (b.i === 1) b.amount = "10000"; b.prev = prev;
+    const h = crypto.createHash("sha256").update(JSON.stringify(sortDeep(b))).digest("hex"); out.push(JSON.stringify({ ...b, hash: h })); prev = h;
+  }
+  fs.writeFileSync(file, out.join("\n") + "\n");
+  assert.equal(verifyAudit(file).ok, true);                                        // the chain alone is fooled
+  assert.match(verifyAnchor(file, anchor).reason, /no longer has the anchored hash/);  // the anchor is not
+  const p = planAnchor(file, anchor);
+  assert.equal(p.action, "refuse"); assert.match(p.reason, /no longer matches the head already on chain/);
+  // a plainly edited log is refused too, even with no anchor yet
+  fs.writeFileSync(file, [lines[0].replace('"i":0', '"i":7'), ...lines.slice(1)].join("\n") + "\n");
+  assert.equal(planAnchor(file, null).action, "refuse");
+});
+
+test("ccd: the scheduled job refuses bad arguments and does nothing after GG_SCHEDULE_UNTIL", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const js = new URL("../src/ccd/schedule.mjs", import.meta.url).pathname;
+  const bad = spawnSync(process.execPath, [js, "1272", tmp(), "not a badge!"], { encoding: "utf8" });
+  assert.equal(bad.status, 2);
+  const off = spawnSync(process.execPath, [js, "1272", tmp(), "JyP9Yax6WTuqEgt5Xo6kd"], { encoding: "utf8", env: { ...process.env, GG_SCHEDULE_UNTIL: "2000-01-01T00:00:00Z" } });
+  assert.equal(off.status, 0); assert.match(off.stdout, /"action":"off"/);
+});
+
+test("ccd: demo:rewrite runs offline on the published public-run log", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const out = execFileSync(process.execPath, [new URL("../demo/rewrite.mjs", import.meta.url).pathname], { encoding: "utf8" }).replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(out, /1\. The log as written\n  chain check: OK   anchor check: OK/);
+  assert.match(out, /chain check: OK \(the rewritten log is consistent with itself\)\n  anchor check: FAIL \(entry 15 no longer has the anchored hash\)/);
+  assert.match(out, /scheduled re-anchor: REFUSE/);
+});

@@ -1,0 +1,21 @@
+# Scheduled re-check + re-anchor (systemd user unit). Copy both files to ~/.config/systemd/user/, set the paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now gigguard-schedule.timer
+[Unit]
+Description=Gig Guard: re-check paid sellers in the Agent Registry, log it, re-anchor the log head on Concordium
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/gig-guard-ccd
+Environment=GG_CCD_NETWORK=testnet
+Environment=GG_CCD_ANCHOR_KEY=gigguard.audit.public.head
+Environment=GG_CCD_KEYFILE=%h/.gig-guard/testnet-account.export
+Environment=GG_CCD_BADGE=JyP9YZrcaSQuQZeJe755t
+Environment=GG_CCD_OWNER=3whFmR7A1j55fAHfaMdkDckhH21Fr5ybfWm5oNVRGNsqJpeehk
+# Stop before the published copy of the log is frozen for judging (remove to run forever).
+Environment=GG_SCHEDULE_UNTIL=2026-11-22T18:00:00Z
+Environment=GG_LIVE_LOG=%h/.gig-guard/schedule-live.md
+# Seller badges to re-check: Ledger Check (Active) and the revoked throwaway (must stay refused).
+ExecStart=/usr/bin/env node src/ccd/schedule.mjs 1272 %h/.gig-guard/audit-public.jsonl JyP9Yax6WTuqEgt5Xo6kd JyP9Yc3aSVQm4p7vi5TXL
+StandardOutput=append:%h/.gig-guard/schedule.log
+StandardError=append:%h/.gig-guard/schedule.log
+TimeoutStartSec=300

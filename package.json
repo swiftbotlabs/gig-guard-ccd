@@ -11,6 +11,7 @@
     "ledger": "node src/cli.mjs ledger",
     "verify": "node src/cli.mjs verify",
     "demo:offline": "node demo/offline.mjs",
+    "demo:rewrite": "node demo/rewrite.mjs",
     "audit": "node src/cli.mjs audit"
   },
   "engines": {
