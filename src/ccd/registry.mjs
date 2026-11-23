@@ -101,8 +101,14 @@ export async function checkOwnerIdentity(owner, { getAccountInfo, identityProvid
   return res;
 }
 
-export async function checkCounterparty(badge, { network = NETWORK, payTo = null, origin = null, call = mcpCall, fetchCard = fetchEndpointCard, fetchProof = fetchEndpointProof, verifyProof = verifyAccountProof, ownerIdentity = checkOwnerIdentity } = {}) {
-  const out = { badge, network, ok: false, found: false, active: false, cardMatches: false, endpointBound: false, walletMatches: false, ownerVerified: false, ownerIdp: null, owner: null, agentWallet: null, tokenId: null, reasons: [], source: "concordium-agent-registry" };
+// Trust tiers. "key-proof" (default, the only one unless the operator pins an origin): the endpoint signs our challenge
+// with the registered wallet's key. "origin-bound" (opt-in per origin, see rail.mjs GG_CCD_ORIGIN_TIER, low caps): for an
+// outside seller that serves no /.well-known/agent-proof at all (HTTP 404). Everything else must still hold, plus:
+// the registry's agent_uri is on the origin being paid, and payTo is the registered agent wallet itself (not just the owner).
+// A proof that is served but wrong, unreadable or unverifiable never falls back to this tier.
+export const ORIGIN_TIER = "origin-bound";
+export async function checkCounterparty(badge, { network = NETWORK, payTo = null, origin = null, allowOriginTier = false, call = mcpCall, fetchCard = fetchEndpointCard, fetchProof = fetchEndpointProof, verifyProof = verifyAccountProof, ownerIdentity = checkOwnerIdentity } = {}) {
+  const out = { badge, network, ok: false, tier: null, found: false, active: false, cardMatches: false, endpointBound: false, originBound: false, walletMatches: false, ownerVerified: false, ownerIdp: null, owner: null, agentWallet: null, tokenId: null, reasons: [], source: "concordium-agent-registry" };
   if (typeof badge !== "string" || !BADGE.test(badge)) { out.reasons.push("no valid Concordium badge given"); return out; }
   let b;
   try { b = await call("check_badge", { id: badge, network }); }
@@ -145,7 +151,15 @@ export async function checkCounterparty(badge, { network = NETWORK, payTo = null
           const nonce = crypto.randomBytes(16).toString("hex");
           const message = proofMessage({ badge, origin, account: payTo, nonce });
           let p = null, good = false;
-          try { p = await fetchProof(origin, nonce); } catch (e) { out.reasons.push(`the seller endpoint gives no key proof${httpOf(e)}`); }
+          let noProof = false;
+          try { p = await fetchProof(origin, nonce); } catch (e) {
+            noProof = httpOf(e) === " (HTTP 404)";
+            // Origin-bound tier: only for an origin the operator pinned, only when no proof is served at all.
+            let uriOrigin = null; try { uriOrigin = new URL(String(b?.on_chain?.agent_uri || "")).origin; } catch { uriOrigin = null; }
+            if (allowOriginTier && noProof && uriOrigin === origin && out.agentWallet && payTo === out.agentWallet) out.originBound = true;
+            else if (allowOriginTier && noProof) out.reasons.push(`origin-bound tier refused: ${uriOrigin !== origin ? "the registered agent_uri is not on the origin being paid" : "payTo is not the registered agent wallet"}`);
+            else out.reasons.push(`the seller endpoint gives no key proof${httpOf(e)}`);
+          }
           if (p) {
             if (p.message !== undefined && p.message !== message) out.reasons.push("the seller endpoint's key proof names another origin, badge or account");
             else if (p.account !== payTo || !p.signature || typeof p.signature !== "object") out.reasons.push("the seller endpoint's key proof is not for the payTo account");
@@ -162,7 +176,8 @@ export async function checkCounterparty(badge, { network = NETWORK, payTo = null
     }
   }
   // Last, and only when everything else passed (one more node read): a verified human stands behind the owner account.
-  if (out.found && out.active && out.cardMatches && out.walletMatches && out.endpointBound) {
+  const bound = out.endpointBound || out.originBound;
+  if (out.found && out.active && out.cardMatches && out.walletMatches && bound) {
     let id;
     try { id = out.owner ? await ownerIdentity(out.owner) : { ok: false, reason: "registry gave no owner account" }; }
     catch { id = { ok: false, reason: "the owner's identity could not be read from the chain (fail closed)" }; }
@@ -170,6 +185,7 @@ export async function checkCounterparty(badge, { network = NETWORK, payTo = null
     if (out.ownerVerified) out.ownerIdp = { id: id.idp, name: id.idpName, validTo: id.validTo };
     else out.reasons.push(id?.reason || "the owner's identity is not verified");
   }
-  out.ok = out.found && out.active && out.cardMatches && out.walletMatches && out.endpointBound && out.ownerVerified;
+  out.ok = out.found && out.active && out.cardMatches && out.walletMatches && bound && out.ownerVerified;
+  out.tier = out.endpointBound ? "key-proof" : out.originBound ? ORIGIN_TIER : null;
   return out;
 }
