@@ -98,3 +98,7 @@ Each later anchor of the same log covers its earlier entries: `check-anchor` pas
 | 2026-11-22 09:16:51 | anchor audit head (public.head), token 1272 | ok, 24:a08bc9b9f3883e6a05410… | [a09a4adc59…](https://ccdexplorer.io/testnet/transaction/a09a4adc59c4f8c4fccbcdaa2fd13b87014f2b6e5a8cd920a933bbc5566b340b) |
 | 2026-11-22 12:16:53 | anchor audit head (public.head), token 1272 | ok, 26:e4c0514433931656c24a3… | [44eefeed3b…](https://ccdexplorer.io/testnet/transaction/44eefeed3b5ffbface4cc519e228d03ebf5e50acd49fdde32623d766eb7eb5eb) |
 | 2026-11-22 15:16:53 | anchor audit head (public.head), token 1272 | ok, 28:0f672e316687d10ffa2f5… | [d6e011250a…](https://ccdexplorer.io/testnet/transaction/d6e011250a407923bae5ba30cf4f701100a65930c41f529040010d1c14733be5) |
+
+## Outside seller (23 Nov 2026)
+
+One paid call to a seller another team runs: MainsMarker, Agent Registry token 990 (badge JyP9Y5PqyaZge2fzDzyQa), `POST https://mainsmarker.sites.tab.bot/x402/review`, 0.5 test CCD, sponsored. MainsMarker serves no `/.well-known/agent-proof`, so Gig Guard paid it in the opt-in origin-bound tier (pinned origin, agent_uri on that origin, payTo = registered agent wallet, Active, card hash matches, verified owner; 1 CCD per call cap). Payment: [47d67f3c…](https://ccdexplorer.io/testnet/transaction/47d67f3c1342b829cbfdc25df2e12bf23e90afc7679214523e2549e043b26be1). Command: `src/ccd/buy.mjs` (see README).
