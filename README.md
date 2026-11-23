@@ -16,7 +16,7 @@ Testnet only. Claim letters are drafts that wait for the user's yes. Paid checks
 npm install
 npm run demo:offline     # the whole flow with a fake registry, fake signature and fake settlement
 npm run demo:rewrite     # the published public-run log vs the head anchored on chain: an edit, a full rewrite, an append
-npm test                 # 114 tests (+1 that needs a maintainer word list, skipped without it)
+npm test                 # 115 tests (+1 that needs a maintainer word list, skipped without it)
 ```
 
 The offline walkthrough uses the real HTTP 402 flow (`@x402/express` seller, `@x402/fetch` buyer), the real payment policy and the real audit log. Only the registry answers, the signature and the settlement are faked. It shows:
