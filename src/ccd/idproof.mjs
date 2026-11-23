@@ -5,16 +5,23 @@
 // credential's on-chain metadata and its status) and then check, ourselves, that it answers OUR challenge:
 //   1. the presentation's context carries the exact nonce and connection id we issued (single use, 10-minute expiry: no replay);
 //   2. every statement we asked for is proven (a weaker one, e.g. a later date-of-birth bound, does not count);
-//   3. every credential is Active and issued by an accepted identity provider (GG_CCD_IDP_ALLOW; testnet's id 0 issues test
-//      identities without document checks, see docs/MAINNET.md).
+//   3. every credential is account-based and belongs to the account we asked about (the credential's registration id is looked up
+//      on chain and must resolve to that account: an anonymous identity-based proof, or one made by a different account, is refused);
+//   4. every credential is inside its validity window ("Active" as the SDK reports it; note the SDK does not report revocation of
+//      identity credentials) and issued by an accepted identity provider (GG_CCD_IDP_ALLOW; testnet's id 0 issues test identities
+//      without document checks, see docs/MAINNET.md).
 // Anything else, including any error from the SDK or the node, is a refusal (fail closed). Nothing personal is stored: only
 // the verdict, the provider index and the proven statement types.
 import crypto from "node:crypto";
-import { VerificationRequestV1, VerifiablePresentationV1 } from "@concordium/web-sdk";
+import { VerificationRequestV1, VerifiablePresentationV1, AccountAddress, CredentialRegistrationId } from "@concordium/web-sdk";
 
 const NETWORK = process.env.GG_CCD_NETWORK === "mainnet" ? "Mainnet" : "Testnet";
 const ALLOW_IDP = (process.env.GG_CCD_IDP_ALLOW || "").split(",").map((x) => x.trim()).filter(Boolean).map(Number);
 export const CHALLENGE_TTL_MS = 600000;
+export const PER_ACCOUNT_OPEN = 3;   // open challenges per account: a flood from other clients can't evict a real buyer's challenge
+
+/** An account's key without its alias bytes (all 2^24 aliases of an account sign with the same keys). */
+export const accountKey = (base58) => Buffer.from(AccountAddress.fromBase58(base58).decodedAddress.subarray(0, 29)).toString("hex");
 
 /** The date-of-birth bound that "at least `age` years old on `now`" means (YYYYMMDD string, inclusive). */
 export function dobCutoff(age, now = new Date()) {
@@ -31,16 +38,19 @@ const hex = (v) => {
 
 /** Issues challenges and checks presentations against them. One instance per service (in memory, bounded). */
 export function idProofGate({ minAge = Number(process.env.GG_CCD_ID_MIN_AGE || 18), resource = "gig-guard", allow = ALLOW_IDP, network = NETWORK,
-  verifyWithNode = null, now = () => new Date(), max = 1000 } = {}) {
+  verifyWithNode = null, accountOf = null, now = () => new Date(), max = 1000 } = {}) {
   const open = new Map();   // nonce hex -> { connectionId, at }
 
   function challenge(connectionId) {
     if (typeof connectionId !== "string" || !/^[\w.:-]{1,128}$/.test(connectionId)) throw new Error("connection id: 1-128 word characters");
     const nonce = crypto.randomBytes(32);
+    const mine = [...open].filter(([, c]) => c.connectionId === connectionId);
+    if (mine.length >= PER_ACCOUNT_OPEN) open.delete(mine[0][0]);   // the account's own oldest, never someone else's
     open.set(nonce.toString("hex"), { connectionId, at: now().getTime() });
-    while (open.size > max) open.delete(open.keys().next().value);
+    for (const [k, c] of open) { if (open.size <= max) break; if (now().getTime() - c.at > CHALLENGE_TTL_MS) open.delete(k); }
+    if (open.size > max) { open.delete(nonce.toString("hex")); throw new Error("too many open identity challenges, retry later"); }
     const context = VerificationRequestV1.createSimpleContext(new Uint8Array(nonce), connectionId, resource);
-    const claims = VerificationRequestV1.claimsBuilder().addAccountOrIdentityClaims([], (b) => b.addMinimumAge(minAge)).getClaims();
+    const claims = VerificationRequestV1.claimsBuilder().addAccountClaims([], (b) => b.addMinimumAge(minAge)).getClaims();
     return { nonce: nonce.toString("hex"), connectionId, resource, minAge, context, claims, expiresAt: new Date(now().getTime() + CHALLENGE_TTL_MS).toISOString() };
   }
 
@@ -68,11 +78,23 @@ export function idProofGate({ minAge = Number(process.env.GG_CCD_ID_MIN_AGE || 1
     } catch (e) { return refuse(`presentation could not be verified (fail closed): ${String(e?.message || e).slice(0, 120)}`); }
     if (v?.type !== "success") return refuse(`proof verification failed: ${String(v?.error?.message || v?.error || "unknown").slice(0, 120)}`);
     const statuses = v.result?.credentialsStatus || [];
-    // CredentialStatus: Active = 0 (Revoked 1, Expired 2, NotActivated 3)
+    // CredentialStatus: Active = 0 (Expired 2, NotActivated 3): the validity window
     if (!statuses.length || statuses.some((s) => s !== 0 && s !== "Active")) return refuse(`credential not active (${statuses.join(",") || "none"})`);
-    // 3. the proven statements must include ours, from an accepted identity provider
+    // 3. account-based credentials of the account we challenged
     const claims = v.result?.request?.subjectClaims || [];
-    const cutoff = dobCutoff(minAge, now());
+    if (!claims.length) return refuse("no claims proven");
+    for (const c of claims) {
+      if (!Array.isArray(c?.type) || !c.type.includes("ConcordiumAccountBasedSubjectClaims")) return refuse("only account-based proofs are accepted (an identity-based proof is tied to no account)");
+      const credId = String(c.id || "").match(/^did:ccd:(?:testnet|mainnet):cred:([0-9a-f]{96})$/i)?.[1];
+      if (!credId) return refuse("credential id missing or malformed");
+      let acct;
+      try { acct = accountOf ? await accountOf(credId) : await defaultAccountOf(credId); } catch { return refuse("credential's account could not be read (fail closed)"); }
+      let key; try { key = accountKey(String(acct)); } catch { return refuse("credential's account could not be read (fail closed)"); }
+      if (key !== ch.connectionId) return refuse("the proof was made by a different account");
+    }
+    // 4. the proven statements must include ours, from an accepted identity provider. The SDK's addMinimumAge bound is exclusive
+    // (born before the day after the cutoff, e.g. "20081124" for 18 on 2026-11-23), so compare with tomorrow's cutoff.
+    const cutoff = dobCutoff(minAge, new Date(now().getTime() + 86400000));
     const idpOf = (c) => Number(String(c?.issuer || "").match(/:idp:(\d+)$/)?.[1]);
     const ageProven = claims.some((c) => (c.statement || []).some((s) => s?.type === "AttributeInRange" && s.attributeTag === "dob"
       && /^\d{8}$/.test(String(s.upper)) && String(s.upper) <= cutoff));
@@ -82,6 +104,12 @@ export function idProofGate({ minAge = Number(process.env.GG_CCD_ID_MIN_AGE || 1
     return { ok: true, idp: idps[0], proven: [`age >= ${minAge}`], reason: null };
   }
   return { challenge, check, pending: () => open.size };
+}
+
+async function defaultAccountOf(credId) {
+  const { nodeClient } = await import("./chaintx.mjs");
+  const info = await nodeClient().getAccountInfo(CredentialRegistrationId.fromHexString(credId));
+  return info.accountAddress.address;
 }
 
 async function defaultVerify(vp, network) {

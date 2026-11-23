@@ -25,7 +25,7 @@ import { AccountAddress, signMessage } from "@concordium/web-sdk";
 import { chainBalance } from "../chain.mjs";
 import { TOKENS, normChain } from "../tokens.mjs";
 import { record, SELLER_AUDIT_FILE } from "./audit.mjs";
-import { idProofGate } from "./idproof.mjs";
+import { idProofGate, accountKey } from "./idproof.mjs";
 
 // The paying account: the sender in the header of the signed V1 transaction the buyer sent (the facilitator has already
 // verified that signature by the time the route runs). Anything else, or anything malformed, is no payer at all.
@@ -53,6 +53,8 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
   buyerIdentity = process.env.GG_CCD_SELLER_BUYER_ID === "1" ? (a) => checkOwnerIdentity(a) : null,
   // Optional identity attribute proof gate (see src/ccd/idproof.mjs); on for the CLI with GG_CCD_SELLER_ID_PROOF=1.
   idProof = process.env.GG_CCD_SELLER_ID_PROOF === "1" ? idProofGate({ resource: "ledger-check/balance" }) : null } = {}) {
+  // An empty provider allow-list would accept testnet's self-service test identities (or any provider): name them explicitly.
+  if (process.env.GG_CCD_SELLER_ID_PROOF === "1" && !(process.env.GG_CCD_IDP_ALLOW || "").trim()) throw new Error("GG_CCD_SELLER_ID_PROOF=1 needs GG_CCD_IDP_ALLOW (e.g. 1,2,3 on mainnet; 0 = testnet test identities, demo only)");
   if (!facilitatorClient) {
     const [host, port] = parseGrpcUrl(process.env.GG_CCD_GRPC || getConcordiumGrpcUrl(CAIP2));
     const signer = toConcordiumFacilitatorSigner(sponsor.address, sponsor.signKey, { host, port, useTls: true });
@@ -98,11 +100,10 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
   app.use("/.well-known/agent-proof", limit("proof"));
   app.use("/v1/id-challenge", limit("idchallenge"));
   // The identity proof is bound to the paying account without its alias bytes (all 2^24 aliases sign with the same keys).
-  const acctKey = (a) => Buffer.from(AccountAddress.fromBase58(a).decodedAddress.subarray(0, 29)).toString("hex");
   app.get("/v1/id-challenge", (req, res) => {
     if (!idProof) return res.status(404).json({ error: "no identity proof required" });
-    let key; try { key = acctKey(String(req.query.account || "")); } catch { return res.status(400).json({ error: "account must be a Concordium account address" }); }
-    const ch = idProof.challenge(key);
+    let key; try { key = accountKey(String(req.query.account || "")); } catch { return res.status(400).json({ error: "account must be a Concordium account address" }); }
+    let ch; try { ch = idProof.challenge(key); } catch { return res.status(503).json({ error: "too many open identity challenges, retry later" }); }
     res.json({ nonce: ch.nonce, connectionId: ch.connectionId, resource: ch.resource, minAge: ch.minAge, claims: ch.claims, expiresAt: ch.expiresAt });
   });
   app.use("/v1/balance", express.json({ limit: "4kb" }));   // parsed only after the rate limit, so bad or oversized bodies count too
@@ -130,23 +131,6 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
   app.post("/v1/balance", async (req, res) => {
     // Runs after the facilitator verified the signed payment and before it is settled: an error status here cancels the
     // settlement, so a buyer we refuse is never charged. The payer is the sender of the verified, signed transaction.
-    if (idProof) {
-      const payer = payerOf(req), h = req.get("x-id-presentation") || "";
-      let r = { ok: false, reason: "no identity proof sent (X-ID-Presentation)" };
-      if (payer && h && h.length <= 90000 && /^[A-Za-z0-9+/=_-]+$/.test(h)) {
-        try { r = await idProof.check(Buffer.from(h, "base64").toString("utf8"), acctKey(payer)); } catch { r = { ok: false, reason: "identity proof could not be checked (fail closed)" }; }
-      } else if (!payer) r = { ok: false, reason: "no payer account in the payment" };
-      if (!r.ok) {
-        const why = String(r.reason || "").replace(/[^\w .,()'>=-]/g, "").slice(0, 160);
-        const key = payer || "-", last = refusedAt.get(`id|${key}`);
-        if (!last || Date.now() - last > 120000) {
-          refusedAt.delete(`id|${key}`); refusedAt.set(`id|${key}`, Date.now()); if (refusedAt.size > ID_CACHE_MAX) refusedAt.delete(refusedAt.keys().next().value);
-          record("refusal", { role: "seller", service: "balance", buyer: payer, reason: `no valid identity attribute proof: ${why}` }, { file: auditFile, agent: badge, owner: seller.address });
-        }
-        return res.status(403).json({ error: `buyer not accepted: ${why}; nothing was charged` });
-      }
-      req.buyerProof = r.proven.join(",");
-    }
     if (buyerIdentity) {
       const payer = payerOf(req);
       let id = { ok: false, reason: "no payer account in the payment" };
@@ -178,6 +162,25 @@ export function buildSeller({ seller = loadAccount(), sponsor = process.env.GG_C
     if (!Object.hasOwn(TOKENS, chain)) return res.status(400).json({ error: `chain must be one of ${Object.keys(TOKENS).join(", ")}` });
     const token = /^0x[0-9a-fA-F]{40}$/.test(String(t || "")) ? t : String(t || "").toUpperCase();
     if (!/^0x[0-9a-fA-F]{40}$/.test(token) && !Object.hasOwn(TOKENS[chain], token)) return res.status(400).json({ error: `token must be a 0x contract or one of ${Object.keys(TOKENS[chain]).join(", ")}` });
+    // Identity proof last: a bad body or a refused buyer identity never consumes the buyer's single-use proof.
+    if (idProof) {
+      const payer = payerOf(req), h = req.get("x-id-presentation") || "";
+      let r = { ok: false, reason: "no identity proof sent (X-ID-Presentation)" };
+      if (payer && h && h.length <= 16000 && /^[A-Za-z0-9+/=_-]+$/.test(h)) {
+        try { r = await idProof.check(Buffer.from(h, "base64").toString("utf8"), accountKey(payer)); } catch { r = { ok: false, reason: "identity proof could not be checked (fail closed)" }; }
+      } else if (!payer) r = { ok: false, reason: "no payer account in the payment" };
+      if (!r.ok) {
+        const why = String(r.reason || "").replace(/[^\w .,()'>=-]/g, "").slice(0, 160);
+        const key = payer || "-", last = refusedAt.get(`id|${key}`);
+        if (!last || Date.now() - last > 120000) {
+          refusedAt.delete(`id|${key}`); refusedAt.set(`id|${key}`, Date.now()); if (refusedAt.size > ID_CACHE_MAX) refusedAt.delete(refusedAt.keys().next().value);
+          record("refusal", { role: "seller", service: "balance", buyer: payer, reason: `no valid identity attribute proof: ${why}` }, { file: auditFile, agent: badge, owner: seller.address });
+        }
+        // A fixed message to the client; the reason stays in the seller's own log.
+        return res.status(403).json({ error: "buyer not accepted: a valid identity attribute proof for the paying account is required (GET /v1/id-challenge); nothing was charged" });
+      }
+      req.buyerProof = r.proven.join(",");
+    }
     try {
       const r = await read(address, chain, token);
       record("decision", { role: "seller", service: "balance", chain, token, ok: !!r, ...(buyerIdentity ? { buyer: payerOf(req), buyer_idp: req.buyerIdp } : {}), ...(idProof ? { buyer: payerOf(req), buyer_proved: req.buyerProof } : {}) }, { file: auditFile, agent: badge, owner: seller.address });
