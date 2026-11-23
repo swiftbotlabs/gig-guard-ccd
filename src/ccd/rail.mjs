@@ -112,14 +112,15 @@ export function makePayingFetch({ account = loadAccount(), scheme: injected, grp
 }
 
 // One paid request. Returns {ok, status, body, tx, explorer, refused}.
-export async function buyCcd(url, { body, purpose = "", ...opts } = {}) {
+// `headers`: extra request headers (e.g. X-ID-Presentation for a seller that asks for an identity attribute proof).
+export async function buyCcd(url, { body, purpose = "", headers = {}, ...opts } = {}) {
   const auditFile = opts.auditFile || AUDIT_FILE;
   const { fetch: paid, last, account } = opts.payingFetch || makePayingFetch({ ...opts, auditFile, purpose });
   if (last.busy) return { ok: false, refused: true, reason: "another paid call is in progress on this paying fetch (one at a time)" };
   last.busy = true;
-  try { return await buyOnce(url, { body, purpose, auditFile, paid, last, account }); } finally { last.busy = false; }
+  try { return await buyOnce(url, { body, purpose, auditFile, paid, last, account, headers }); } finally { last.busy = false; }
 }
-async function buyOnce(url, { body, purpose, auditFile, paid, last, account }) {
+async function buyOnce(url, { body, purpose, auditFile, paid, last, account, headers = {} }) {
   const t0 = Date.now();
   last.decision = null;
   last.origin = new URL(url).origin;   // the endpoint we chose to call: the badge must be bound to it
@@ -131,7 +132,8 @@ async function buyOnce(url, { body, purpose, auditFile, paid, last, account }) {
   try {
     // 30 s, no redirects (a redirect would leave the origin the badge was bound to)
     const init = { redirect: "error", signal: AbortSignal.timeout(Number(process.env.GG_CCD_CALL_TIMEOUT_MS || 30000)) };
-    res = await paid(url, body ? { ...init, method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : init);
+    const extra = Object.fromEntries(Object.entries(headers || {}).filter(([k, v]) => /^x-[\w-]{1,40}$/i.test(k) && typeof v === "string"));
+    res = await paid(url, body ? { ...init, method: "POST", headers: { ...extra, "content-type": "application/json" }, body: JSON.stringify(body) } : { ...init, headers: extra });
   } catch (e) {
     if (last.decision && !last.decision.ok) return { ok: false, refused: true, reason: last.decision.reason };
     if (last.decision?.ok) logPayment({ tx: null, settled: false, error: String(e.message || e).slice(0, 200) });   // signed, outcome unknown: still counted

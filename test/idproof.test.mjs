@@ -60,3 +60,56 @@ test("refused: SDK says failed, SDK throws, credential revoked, provider not acc
   assert.equal((await g.check({ x: "y".repeat(70000) })).ok, false);
   assert.throws(() => g.challenge("bad id with spaces"));
 });
+
+// Seller wiring: Ledger Check with GG_CCD_SELLER_ID_PROOF. Same fake facilitator and paying fetch as test/ccd.test.mjs.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+const { buildSeller } = await import("../src/ccd/seller.mjs");
+const { buyCcd, makePayingFetch, CAIP2 } = await import("../src/ccd/rail.mjs");
+const SELLER = "4n3P1UDZA2usiVTS95mteZRnMB7pizRb9LcsmqrQMstnCgcE9K", BUYER = "4SV3Q1ejRmi3DVNPaZGS8QRRNikquFeMpNXjnLnoNFkRYnL62R";
+const tmp = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ggccd-id-")), "audit.jsonl");
+let settled = 0;
+const scheme = { scheme: "exact", async createPaymentPayload(v, req) { return { x402Version: v, payload: { signedTransaction: { amount: req.amount, to: req.payTo, header: { sender: BUYER } }, sender: BUYER } }; } };
+const facilitatorClient = {
+  async verify(p, r) { return { isValid: p.payload.signedTransaction.to === r.payTo, payer: BUYER }; },
+  async settle(p, r) { settled++; return { success: true, transaction: settled.toString(16).padStart(64, "a"), network: r.network, payer: BUYER }; },
+  async getSupported() { return { kinds: [{ x402Version: 2, scheme: "exact", network: CAIP2, extra: { feePayer: SELLER } }], extensions: [], signers: {} }; },
+};
+const okCheck = async () => ({ ok: true, counterparty: { badge: "MockVerifiedAgent11111", owner: SELLER } });
+async function withIdSeller(idProof, fn) {
+  const app = buildSeller({ seller: { address: SELLER, signer: null }, origin: null, facilitatorClient, read: async () => ({ balance: 0 }), auditFile: tmp(), card: null, badge: "MockVerifiedAgent11111", idProof });
+  const srv = app.listen(0, "127.0.0.1"); await new Promise((r) => srv.once("listening", r));
+  try { return await fn(`http://127.0.0.1:${srv.address().port}`); } finally { srv.close(); }
+}
+const q = { address: "0x000000000000000000000000000000000000dEaD", chain: "ethereum", token: "USDT" };
+const pay = (base, headers) => buyCcd(base + "/v1/balance", { body: q, purpose: "claim", auditFile: tmp(), headers,
+  payingFetch: makePayingFetch({ account: { address: BUYER, signer: null }, scheme, check: okCheck, auditFile: tmp() }) });
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64");
+
+test("seller: a buyer with a valid proof for its own account is served and charged; without one, refused and NOT charged", async () => {
+  const g = idProofGate({ now: () => new Date(), allow: [], verifyWithNode: proven({ upper: dobCutoff(18, new Date()) }), resource: "ledger-check/balance" });
+  await withIdSeller(g, async (base) => {
+    const ch = await (await fetch(`${base}/v1/id-challenge?account=${BUYER}`)).json();
+    assert.equal(ch.minAge, 18);
+    let before = settled;
+    const none = await pay(base, {});
+    assert.equal(none.ok, false); assert.equal(settled, before, "charged without a proof");
+    before = settled;
+    const r = await pay(base, { "X-ID-Presentation": b64(vpFor(ch)) });
+    assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(settled, before + 1);
+    before = settled;
+    const replay = await pay(base, { "X-ID-Presentation": b64(vpFor(ch)) });
+    assert.equal(replay.ok, false); assert.equal(settled, before, "a replayed proof was charged");
+  });
+});
+test("seller: a proof made for another account is refused (not charged); bad account on the challenge is a 400; gate off -> 404", async () => {
+  const g = idProofGate({ now: () => new Date(), allow: [], verifyWithNode: proven({ upper: dobCutoff(18, new Date()) }), resource: "ledger-check/balance" });
+  await withIdSeller(g, async (base) => {
+    const other = await (await fetch(`${base}/v1/id-challenge?account=${SELLER}`)).json();
+    const before = settled;
+    assert.equal((await pay(base, { "X-ID-Presentation": b64(vpFor(other)) })).ok, false); assert.equal(settled, before);
+    assert.equal((await fetch(`${base}/v1/id-challenge?account=nope`)).status, 400);
+  });
+  await withIdSeller(null, async (base) => assert.equal((await fetch(`${base}/v1/id-challenge?account=${BUYER}`)).status, 404));
+});
