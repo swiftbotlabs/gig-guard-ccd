@@ -58,7 +58,10 @@ test("refused: proof for hire (identity-based, or made by another account's cred
   assert.match((await g.check(vpFor(g.challenge(K)))).reason, /fail closed/);
 });
 test("refused: the proof is weaker than asked (born after the cutoff), or proves another attribute", async () => {
-  let g = gate({ verifyWithNode: proven({ upper: "20081125" }) });
+  // one day weaker than what the challenge asks (the SDK dates its bound on the machine's local clock, so derive it from the ask)
+  const asked = gate().challenge(K).claims[0].statements[0].upper;
+  const d = new Date(Date.UTC(+asked.slice(0, 4), +asked.slice(4, 6) - 1, +asked.slice(6, 8) + 1)).toISOString().slice(0, 10).replace(/-/g, "");
+  let g = gate({ verifyWithNode: proven({ upper: d }) });
   assert.match((await g.check(vpFor(g.challenge(K)))).reason, /at least 18/);
   g = gate({ verifyWithNode: proven({ tag: "nationality", type: "AttributeInSet" }) });
   assert.match((await g.check(vpFor(g.challenge(K)))).reason, /at least 18/);

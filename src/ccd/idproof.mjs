@@ -46,11 +46,16 @@ export function idProofGate({ minAge = Number(process.env.GG_CCD_ID_MIN_AGE || 1
     const nonce = crypto.randomBytes(32);
     const mine = [...open].filter(([, c]) => c.connectionId === connectionId);
     if (mine.length >= PER_ACCOUNT_OPEN) open.delete(mine[0][0]);   // the account's own oldest, never someone else's
-    open.set(nonce.toString("hex"), { connectionId, at: now().getTime() });
+    const entry = { connectionId, at: now().getTime(), asked: null };
+    open.set(nonce.toString("hex"), entry);
     for (const [k, c] of open) { if (open.size <= max) break; if (now().getTime() - c.at > CHALLENGE_TTL_MS) open.delete(k); }
     if (open.size > max) { open.delete(nonce.toString("hex")); throw new Error("too many open identity challenges, retry later"); }
     const context = VerificationRequestV1.createSimpleContext(new Uint8Array(nonce), connectionId, resource);
     const claims = VerificationRequestV1.claimsBuilder().addAccountClaims([], (b) => b.addMinimumAge(minAge)).getClaims();
+    // The SDK dates the bound with the machine's LOCAL clock: keep the exact bound we asked for, so a proof of our own
+    // statement is accepted whatever the time zone (before, a VM ahead of UTC refused every real proof near midnight).
+    const up = String(claims?.[0]?.statements?.find((x) => x?.attributeTag === "dob")?.upper || "");
+    entry.asked = /^\d{8}$/.test(up) ? up : null;
     return { nonce: nonce.toString("hex"), connectionId, resource, minAge, context, claims, expiresAt: new Date(now().getTime() + CHALLENGE_TTL_MS).toISOString() };
   }
 
@@ -94,7 +99,9 @@ export function idProofGate({ minAge = Number(process.env.GG_CCD_ID_MIN_AGE || 1
     }
     // 4. the proven statements must include ours, from an accepted identity provider. The SDK's addMinimumAge bound is exclusive
     // (born before the day after the cutoff, e.g. "20081124" for 18 on 2026-11-23), so compare with tomorrow's cutoff.
-    const cutoff = dobCutoff(minAge, new Date(now().getTime() + 86400000));
+    // The bound we asked for in this challenge also counts (the SDK computed it on the local clock, see challenge()).
+    const computed = dobCutoff(minAge, new Date(now().getTime() + 86400000));
+    const cutoff = ch.asked && ch.asked > computed ? ch.asked : computed;
     const idpOf = (c) => Number(String(c?.issuer || "").match(/:idp:(\d+)$/)?.[1]);
     const ageProven = claims.some((c) => (c.statement || []).some((s) => s?.type === "AttributeInRange" && s.attributeTag === "dob"
       && /^\d{8}$/.test(String(s.upper)) && String(s.upper) <= cutoff));
