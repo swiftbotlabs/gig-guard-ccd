@@ -24,7 +24,7 @@ So one agent costs under €0.10 to set up, and about €10 a month to keep its 
 1. Register Gig Guard on mainnet (the same `setup.mjs card / register / badge` steps), with the owner verified at one of providers 1-3.
 2. Register Ledger Check on mainnet the same way, and run one paid call with the buyer gate on.
 3. Turn on the scheduled re-check and re-anchor (`deploy/gigguard-schedule.*`, every 3 h), and publish the log's anchor history.
-4. Invite the first outside seller. We have none yet, and we won't name one we don't have.
+4. Bring outside sellers onto mainnet. On testnet one outside seller has been paid so far (MainsMarker, origin-bound tier, see [LIVE.md](LIVE.md)); none yet serves a key proof for the strict tier.
 
 ## Risks we know about
 - The hosted registry service is a dependency. If it is down, Gig Guard pays nobody, by design. The fix is to read the registry contract directly from our own node.
