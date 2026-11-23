@@ -50,7 +50,7 @@ export const proofMessage = ({ badge, origin, account, nonce }) =>
   `gig-guard endpoint proof v1\nbadge: ${badge}\norigin: ${origin}\naccount: ${account}\nnonce: ${nonce}`;
 export async function fetchEndpointProof(origin, nonce) {
   const res = await fetch(`${origin}/.well-known/agent-proof?nonce=${nonce}`, { redirect: "error", signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });   // typed: only a real 404 status counts as "no proof served"
   return JSON.parse((await readCapped(res, 4096, "proof")).toString("utf8"));
 }
 // Checks a message signature against the account's credential keys read from a Concordium node.
@@ -153,7 +153,7 @@ export async function checkCounterparty(badge, { network = NETWORK, payTo = null
           let p = null, good = false;
           let noProof = false;
           try { p = await fetchProof(origin, nonce); } catch (e) {
-            noProof = httpOf(e) === " (HTTP 404)";
+            noProof = e?.status === 404;
             // Origin-bound tier: only for an origin the operator pinned, only when no proof is served at all.
             let uriOrigin = null; try { uriOrigin = new URL(String(b?.on_chain?.agent_uri || "")).origin; } catch { uriOrigin = null; }
             if (allowOriginTier && noProof && uriOrigin === origin && out.agentWallet && payTo === out.agentWallet) out.originBound = true;

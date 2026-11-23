@@ -27,6 +27,7 @@ export function parseOriginTier(spec = "") {
     const u = new URL(part.slice(0, i)), badge = part.slice(i + 1);
     if (u.protocol !== "https:" || u.origin !== part.slice(0, i).replace(/\/$/, "")) throw new Error(`GG_CCD_ORIGIN_TIER: ${part.slice(0, i)} is not an https origin`);
     if (!/^[1-9A-HJ-NP-Za-km-z]{12,40}$/.test(badge)) throw new Error("GG_CCD_ORIGIN_TIER: bad badge");
+    if (m.has(u.origin)) throw new Error(`GG_CCD_ORIGIN_TIER: ${u.origin} is pinned twice`);
     m.set(u.origin, badge);
   }
   return m;
@@ -174,7 +175,7 @@ async function buyOnce(url, { body, purpose, auditFile, paid, last, account, hea
   let parsed = null, tooBig = false;
   try { parsed = JSON.parse((await readCapped(res, 65536, "response")).toString("utf8")); } catch (e) { tooBig = /larger than/.test(String(e.message)); }
   const out = { ok: res.ok && !tooBig, status: res.status, body: tooBig ? null : parsed, ...(tooBig ? { reason: "seller response larger than 65536 bytes" } : {}), tx, explorer: tx ? getExplorerTxUrl(CAIP2, tx) : null, ms: Date.now() - t0,
-    seller_badge: last.decision?.ok ? last.decision.counterparty?.badge : null,
+    seller_badge: last.decision?.ok ? last.decision.counterparty?.badge : null, trust_tier: last.decision?.counterparty?.tier ?? null,
     amount_ccd: last.decision?.ok && last.decision.req?.asset === "CCD" ? Number(last.decision.req.amount) / 1e6 : null };
   if (last.decision?.ok) logPayment({ tx, settled: !!tx && res.ok, http: res.status });
   return out;

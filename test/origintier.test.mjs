@@ -31,7 +31,7 @@ const entry = ({ origin = ORIGIN, cardBody = card(), owner = WALLET, hashOk = tr
   checks: { on_chain_agent_found: true, status_active: true, hash_matches_on_chain: hashOk },
   on_chain: { owner_account: owner, status: "Active", agent_uri: `${origin}/.well-known/agent-card.json`, metadata_hash_hex: hash ?? sha(cardBody) }, token_id: 990 });
 const fakeCall = (e, wallet = WALLET) => async (name) => name === "check_badge" ? e : { agent_wallet: wallet };
-const no404 = async () => { throw new Error("HTTP 404"); };
+const no404 = async () => { throw Object.assign(new Error("HTTP 404"), { status: 404 }); };
 const checkWith = ({ e = entry(), wallet = WALLET, cardBody = card(), fetchProof = no404 } = {}) => (badge, o) =>
   checkCounterparty(badge, { ...o, call: fakeCall(e, wallet), fetchCard: async () => Buffer.from(cardBody), fetchProof, ownerIdentity: fakeOwnerIdentity, verifyProof: async () => false });
 const PINS = new Map([[ORIGIN, BADGE]]);
@@ -88,8 +88,16 @@ test("origin tier: a proof that is served but wrong, or an unreachable proof end
   const bad = async () => ({ account: WALLET, signature: { 0: { 0: "a".repeat(128) } } });
   const d1 = await payPolicy(offer(), { check: checkWith({ fetchProof: bad }), auditFile: tmp(), origin: ORIGIN, originPins: PINS });
   assert.equal(d1.ok, false); assert.match(d1.reason, /not signed by the payTo account/);
-  const d2 = await payPolicy(offer(), { check: checkWith({ fetchProof: async () => { throw new Error("HTTP 500"); } }), auditFile: tmp(), origin: ORIGIN, originPins: PINS });
+  const d2 = await payPolicy(offer(), { check: checkWith({ fetchProof: async () => { throw Object.assign(new Error("HTTP 500"), { status: 500 }); } }), auditFile: tmp(), origin: ORIGIN, originPins: PINS });
   assert.equal(d2.ok, false); assert.match(d2.reason, /gives no key proof \(HTTP 500\)/);
+  // a proof served with 200 whose unparsable body reads "HTTP 404" (the parse error quotes it) is not "no proof served"
+  const { fetchEndpointProof } = await import("../src/ccd/registry.mjs");
+  const http = await import("node:http");
+  const srv = http.createServer((q, r) => { r.writeHead(200); r.end("HTTP 404"); }).listen(0); await new Promise((r) => srv.once("listening", r));
+  try {
+    const d3 = await payPolicy(offer(), { check: checkWith({ fetchProof: fetchEndpointProof.bind(null, `http://127.0.0.1:${srv.address().port}`) }), auditFile: tmp(), origin: ORIGIN, originPins: PINS });
+    assert.equal(d3.ok, false); assert.match(d3.reason, /gives no key proof/);
+  } finally { srv.close(); }
 });
 
 test("origin tier: an offer naming another badge than the pinned one is refused; another origin is not pinned", async () => {
@@ -104,6 +112,7 @@ test("origin tier: pins must be https origins with a well-formed badge", () => {
   assert.throws(() => parseOriginTier(`http://outside-seller.example=${BADGE}`), /https origin/);
   assert.throws(() => parseOriginTier(`${ORIGIN}/x402/review=${BADGE}`), /https origin/);
   assert.throws(() => parseOriginTier(`${ORIGIN}=not a badge`), /bad badge/);
+  assert.throws(() => parseOriginTier(`${ORIGIN}=${BADGE},${ORIGIN}=SomeQtherBadge1234567`), /pinned twice/);
 });
 
 // End to end over real x402 (@x402/express seller, @x402/fetch buyer): a seller that serves no key proof (origin unset -> 404).
